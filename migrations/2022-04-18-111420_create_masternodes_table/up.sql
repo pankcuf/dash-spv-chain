@@ -1,0 +1,26 @@
+-- Your SQL goes here
+CREATE TABLE masternodes (
+    id INTEGER PRIMARY KEY NOT NULL,
+    chain_id INTEGER NOT NULL,
+    address UNSIGNED BIG INT NOT NULL,
+    port SMALLINT NOT NULL,
+    core_last_connection_date TIMESTAMP,
+    core_protocol UNSIGNED BIG INT NOT NULL,
+    core_version VARCHAR,
+    is_valid BOOLEAN NOT NULL,
+    platform_ping UNSIGNED BIG INT NOT NULL,
+    platform_ping_date TIMESTAMP,
+    platform_version VARCHAR,
+    known_confirmed_at_height INTEGER NOT NULL,
+    update_height INTEGER NOT NULL,
+    local_masternode_id INTEGER,
+    prev_operator_bls_public_keys BLOB,
+    prev_masternode_entry_hashes BLOB,
+    prev_validity BLOB,
+    confirmed_hash BLOB NOT NULL,
+    ipv6_address BLOB NOT NULL,
+    key_id_voting BLOB NOT NULL,
+    operator_bls_public_key BLOB NOT NULL,
+    provider_registration_transaction_hash BLOB NOT NULL,
+    masternode_entry_hash BLOB NOT NULL
+ )

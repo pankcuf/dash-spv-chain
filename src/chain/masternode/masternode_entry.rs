@@ -1,0 +1,404 @@
+use byte::ctx::Endian;
+use byte::{BytesExt, TryRead};
+use std::collections::BTreeMap;
+use std::hash::Hasher;
+use std::net::IpAddr;
+use crate::chain::common::{BlockData, SocketAddress};
+use crate::consensus::Encodable;
+use crate::crypto::byte_util::{AsBytes, Zeroable};
+use crate::crypto::data_ops::short_hex_string_from;
+use crate::crypto::{UInt128, UInt160, UInt256, UInt384};
+use crate::hashes::{sha256, sha256d, Hash};
+use crate::models::OperatorPublicKey;
+use crate::storage::manager::managed_context::ManagedContext;
+use crate::storage::models::masternode::MasternodeEntity;
+use crate::util::crypto::{address_from_hash160_for_chain, address_with_public_key_data};
+
+#[derive(Clone, Ord, PartialOrd, Eq, PartialEq)]
+pub struct MasternodeEntry {
+    pub provider_registration_transaction_hash: UInt256,
+    pub confirmed_hash: UInt256,
+    pub confirmed_hash_hashed_with_provider_registration_transaction_hash: Option<UInt256>,
+    pub socket_address: SocketAddress,
+    pub operator_public_key: OperatorPublicKey,
+    pub previous_operator_public_keys: BTreeMap<BlockData, OperatorPublicKey>,
+    pub previous_entry_hashes: BTreeMap<BlockData, UInt256>,
+    pub previous_validity: BTreeMap<BlockData, bool>,
+    pub known_confirmed_at_height: Option<u32>,
+    pub update_height: u32,
+    pub key_id_voting: UInt160,
+    pub is_valid: bool,
+    pub entry_hash: UInt256,
+
+    pub platform_ping: u64,
+    pub platform_ping_date: u64,
+
+}
+impl std::fmt::Debug for MasternodeEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MasternodeEntry")
+            .field("provider_registration_transaction_hash", &self.provider_registration_transaction_hash)
+            .field("confirmed_hash", &self.confirmed_hash)
+            .field("confirmed_hash_hashed_with_provider_registration_transaction_hash", &self.confirmed_hash_hashed_with_provider_registration_transaction_hash.unwrap_or(UInt256::MIN))
+            .field("socket_address", &self.socket_address)
+            .field("operator_public_key", &self.operator_public_key)
+            .field("previous_operator_public_keys", &self.previous_operator_public_keys)
+            .field("previous_entry_hashes", &self.previous_entry_hashes)
+            .field("previous_validity", &self.previous_validity)
+            .field("known_confirmed_at_height", &self.known_confirmed_at_height.unwrap_or(0))
+            .field("update_height", &self.update_height)
+            .field("key_id_voting", &self.key_id_voting)
+            .field("is_valid", &self.is_valid)
+            .field("entry_hash", &self.entry_hash)
+            .finish()
+    }
+}
+
+impl PartialEq for MasternodeEntry {
+    fn eq(&self, other: &Self) -> bool {
+        other == self || self.provider_registration_transaction_hash == other.provider_registration_transaction_hash
+    }
+}
+
+impl std::hash::Hash for MasternodeEntry {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        //self.providerRegistrationTransactionHash.u64[0]
+        state.write(self.provider_registration_transaction_hash.as_bytes());
+    }
+}
+
+impl<'a> TryRead<'a, Endian> for MasternodeEntry {
+    fn try_read(bytes: &'a [u8], _ctx: Endian) -> byte::Result<(Self, usize)> {
+        let offset = &mut 0;
+        let provider_registration_transaction_hash =
+            bytes.read_with::<UInt256>(offset, byte::LE)?;
+        let confirmed_hash = bytes.read_with::<UInt256>(offset, byte::LE)?;
+        let ip_address = bytes.read_with::<UInt128>(offset, byte::LE)?;
+        let port = bytes.read_with::<u16>(offset, byte::LE)?.swap_bytes();
+        let socket_address = SocketAddress { ip_address, port };
+        let operator_public_key = bytes.read_with::<UInt384>(offset, byte::LE)?;
+        let key_id_voting = bytes.read_with::<UInt160>(offset, byte::LE)?;
+        let is_valid = bytes.read_with::<u8>(offset, byte::LE).unwrap_or(0);
+        Ok((
+            Self::new(
+                provider_registration_transaction_hash,
+                confirmed_hash,
+                socket_address,
+                key_id_voting,
+                OperatorPublicKey { data: operator_public_key, version: 0 },
+                is_valid,
+            ),
+            *offset,
+        ))
+    }
+}
+
+impl MasternodeEntry {
+    pub fn new(
+        provider_registration_transaction_hash: UInt256,
+        confirmed_hash: UInt256,
+        socket_address: SocketAddress,
+        key_id_voting: UInt160,
+        operator_public_key: OperatorPublicKey,
+        is_valid: u8,
+    ) -> Self {
+        let entry_hash = MasternodeEntry::calculate_entry_hash(
+            provider_registration_transaction_hash,
+            confirmed_hash,
+            socket_address,
+            operator_public_key,
+            key_id_voting,
+            is_valid,
+        );
+        Self {
+            provider_registration_transaction_hash,
+            confirmed_hash,
+            confirmed_hash_hashed_with_provider_registration_transaction_hash: Some(
+                Self::hash_confirmed_hash(confirmed_hash, provider_registration_transaction_hash),
+            ),
+            socket_address,
+            operator_public_key,
+            previous_operator_public_keys: Default::default(),
+            previous_entry_hashes: Default::default(),
+            previous_validity: Default::default(),
+            known_confirmed_at_height: None,
+            update_height: 0,
+            key_id_voting,
+            is_valid: is_valid != 0,
+            entry_hash,
+            ..Default::default()
+        }
+    }
+
+    fn calculate_entry_hash(
+        provider_registration_transaction_hash: UInt256,
+        confirmed_hash: UInt256,
+        socket_address: SocketAddress,
+        operator_public_key: OperatorPublicKey,
+        key_id_voting: UInt160,
+        is_valid: u8,
+    ) -> UInt256 {
+        const HASH_IMPORTANT_DATA_LENGTH: usize = 32 + 32 + 16 + 2 + 48 + 20 + 1;
+        let mut buffer: Vec<u8> = Vec::with_capacity(HASH_IMPORTANT_DATA_LENGTH);
+        provider_registration_transaction_hash.enc(&mut buffer);
+        confirmed_hash.enc(&mut buffer);
+        socket_address.ip_address.enc(&mut buffer);
+        socket_address.port.swap_bytes().enc(&mut buffer);
+        operator_public_key.data.enc(&mut buffer);
+        key_id_voting.enc(&mut buffer);
+        is_valid.enc(&mut buffer);
+        UInt256(sha256d::Hash::hash(&buffer).into_inner())
+    }
+
+    pub fn confirmed_hash_at(&self, block_height: u32) -> Option<UInt256> {
+        match self.known_confirmed_at_height {
+            Some(h) => {
+                if h > block_height {
+                    None
+                } else {
+                    Some(self.confirmed_hash)
+                }
+            }
+            None => None,
+        }
+    }
+
+    pub fn update_confirmed_hash(&mut self, hash: UInt256) {
+        self.confirmed_hash = hash;
+        if !self.provider_registration_transaction_hash.is_zero() {
+            self.update_confirmed_hash_hashed_with_provider_registration_transaction_hash();
+        }
+    }
+
+    pub fn update_confirmed_hash_hashed_with_provider_registration_transaction_hash(&mut self) {
+        let hash = Self::hash_confirmed_hash(
+            self.confirmed_hash,
+            self.provider_registration_transaction_hash,
+        );
+        self.confirmed_hash_hashed_with_provider_registration_transaction_hash = Some(hash)
+    }
+
+    pub fn update_provider_registration_transaction_hash(&mut self, pro_reg_tx_hash: UInt256) {
+        self.provider_registration_transaction_hash = pro_reg_tx_hash;
+        if self.confirmed_hash.is_zero() {
+            self.update_confirmed_hash_hashed_with_provider_registration_transaction_hash();
+        }
+    }
+
+    pub fn confirmed_hash_hashed_with_provider_registration_transaction_hash_at(
+        &self,
+        block_height: u32,
+    ) -> Option<UInt256> {
+        if self.known_confirmed_at_height.is_none()
+            || self.known_confirmed_at_height? <= block_height
+        {
+            self.confirmed_hash_hashed_with_provider_registration_transaction_hash
+        } else {
+            Some(Self::hash_confirmed_hash(
+                UInt256::default(),
+                self.provider_registration_transaction_hash,
+            ))
+        }
+    }
+
+    pub fn host(&self) -> String {
+        let ip = self.socket_address.ip_address;
+        let port = self.socket_address.port;
+        format!("{}:{}", ip.to_string(), port.to_string())
+    }
+
+    pub fn ip_address_string(&self) -> String {
+        format!("{}", IpAddr::from(self.socket_address.ip_address.0))
+    }
+
+    pub fn port_string(&self) -> String {
+        format!("{}", self.socket_address.port)
+    }
+
+    pub fn voting_address(&self) -> Option<String> {
+        address_from_hash160_for_chain(&self.key_id_voting, self.chain)
+    }
+
+    pub fn operator_address(&self) -> Option<String> {
+        address_with_public_key_data(self.operator_public_key.to_bytes_vec(), self.chain)
+    }
+
+    pub fn payload_data(&self) -> UInt256 {
+        Self::calculate_entry_hash(
+            self.provider_registration_transaction_hash,
+            self.confirmed_hash,
+            self.socket_address,
+            self.operator_public_key,
+            self.key_id_voting,
+            if self.is_valid { 1 } else { 0 },
+        )
+    }
+
+    pub fn hash_confirmed_hash(confirmed_hash: UInt256, pro_reg_tx_hash: UInt256) -> UInt256 {
+        let mut buffer: Vec<u8> = Vec::with_capacity(64);
+        pro_reg_tx_hash.enc(&mut buffer);
+        confirmed_hash.enc(&mut buffer);
+        UInt256::sha256(&buffer)
+    }
+
+    pub fn is_valid_at(&self, block_height: u32) -> bool {
+        if self.previous_validity.is_empty() || block_height == u32::MAX {
+            return self.is_valid;
+        }
+        let mut min_distance = u32::MAX;
+        let mut is_valid = self.is_valid;
+        for (&BlockData { height, .. }, &validity) in &self.previous_validity {
+            if height <= block_height {
+                continue;
+            }
+            let distance = height - block_height;
+            if distance < min_distance {
+                min_distance = distance;
+                is_valid = validity;
+            }
+        }
+        is_valid
+    }
+
+    pub fn operator_public_key_at(&self, block_height: u32) -> OperatorPublicKey {
+        if self.previous_operator_public_keys.is_empty() {
+            return self.operator_public_key;
+        }
+        let mut min_distance = u32::MAX;
+        let mut used_previous_operator_public_key_at_block_hash = self.operator_public_key;
+        for (&BlockData { height, .. }, &key) in &self.previous_operator_public_keys {
+            if height <= block_height {
+                continue;
+            }
+            let distance = height - block_height;
+            if distance < min_distance {
+                min_distance = distance;
+                used_previous_operator_public_key_at_block_hash = key;
+            }
+        }
+        used_previous_operator_public_key_at_block_hash
+    }
+
+    pub fn entry_hash_at(&self, block_height: u32) -> UInt256 {
+        if self.previous_entry_hashes.is_empty() || block_height == u32::MAX {
+            return self.entry_hash;
+        }
+        let mut min_distance = u32::MAX;
+        let mut used_hash = self.entry_hash;
+        for (&BlockData { height, .. }, &hash) in &self.previous_entry_hashes {
+            if height <= block_height {
+                continue;
+            }
+            let distance = height - block_height;
+            if distance < min_distance {
+                min_distance = distance;
+                println!("SME Hash for proTxHash {:?} : Using {:?} instead of {:?} for list at block height {}", self.provider_registration_transaction_hash, hash, used_hash, block_height);
+                used_hash = hash;
+            }
+        }
+        used_hash
+    }
+
+    pub fn unique_id(&self) -> String {
+        short_hex_string_from(&self.provider_registration_transaction_hash.0)
+    }
+
+    pub fn update_with_previous_entry(&mut self, entry: &mut MasternodeEntry, block: BlockData) {
+        self.previous_validity = entry
+            .previous_validity
+            .clone()
+            .into_iter()
+            .filter(|(block, _)| block.height < self.update_height)
+            .collect();
+        if entry.is_valid_at(self.update_height) != self.is_valid {
+            self.previous_validity.insert(block, entry.is_valid);
+        }
+        self.previous_operator_public_keys = entry
+            .previous_operator_public_keys
+            .clone()
+            .into_iter()
+            .filter(|(block, _)| block.height < self.update_height)
+            .collect();
+        if entry.operator_public_key_at(self.update_height) != self.operator_public_key {
+            self.previous_operator_public_keys.insert(block, entry.operator_public_key);
+        }
+        let old_prev_mn_entry_hashes = entry
+            .previous_entry_hashes
+            .clone()
+            .into_iter()
+            .filter(|(block, _)| block.height < self.update_height)
+            .collect();
+        self.previous_entry_hashes = old_prev_mn_entry_hashes;
+        if entry.entry_hash_at(self.update_height) != self.entry_hash {
+            self.previous_entry_hashes.insert(block, entry.entry_hash);
+        }
+    }
+
+    pub fn update_with_block_height(&mut self, block_height: u32) {
+        self.update_height = block_height;
+        if !self.confirmed_hash.is_zero() && block_height != u32::MAX {
+            self.known_confirmed_at_height = Some(block_height);
+        }
+    }
+
+    pub fn update_with_bls_version(&mut self, version: u16) {
+        self.operator_public_key.version = version;
+    }
+}
+
+impl MasternodeEntry {
+    pub fn merged_with_masternode_entry(&mut self, entry: &MasternodeEntry, block_height: u32) {
+
+        if self.update_height < block_height {
+            self.update_height = block_height;
+            if self.socket_address != entry.socket_address {
+                self.socket_address = entry.socket_address;
+            }
+            if self.confirmed_hash != entry.confirmed_hash {
+                self.confirmed_hash = entry.confirmed_hash;
+                self.known_confirmed_at_height = entry.known_confirmed_at_height;
+            }
+            if self.key_id_voting != entry.key_id_voting {
+                self.key_id_voting = entry.key_id_voting;
+            }
+            if self.operator_public_key != entry.operator_public_key {
+                self.operator_public_key = entry.operator_public_key;
+            }
+            if self.is_valid != entry.is_valid {
+                self.is_valid = entry.is_valid;
+            }
+            self.entry_hash = entry.entry_hash;
+            self.merge_previous_fields_using_masternode_entrys_previous_fields(entry, block_height);
+        }
+        else if block_height < self.update_height {
+            self.merge_previous_fields_using_masternode_entrys_previous_fields(entry, block_height);
+        }
+    }
+
+    fn merge_previous_fields_using_masternode_entrys_previous_fields(&mut self, entry: &MasternodeEntry, block_height: u32) {
+        let old_previous_entry_hashes_dict = &entry.previous_entry_hashes;
+        if !old_previous_entry_hashes_dict.is_empty() {
+            self.previous_entry_hashes.extend(old_previous_entry_hashes_dict);
+        }
+        let old_previous_operator_public_keys_dict = &entry.previous_operator_public_keys;
+        if !old_previous_operator_public_keys_dict.is_empty() {
+            self.previous_operator_public_keys.extend(old_previous_operator_public_keys_dict);
+        }
+        let old_previous_validity_dict = &entry.previous_validity;
+        if !old_previous_validity_dict.is_empty() {
+            self.previous_validity.extend(old_previous_validity_dict);
+        }
+        if !self.confirmed_hash.is_zero() && !entry.confirmed_hash.is_zero() && (self.known_confirmed_at_height.is_none() || self.known_confirmed_at_height.unwrap() > block_height) {
+            // we now know it was confirmed earlier so update to earlier
+            self.known_confirmed_at_height = entry.known_confirmed_at_height;
+        }
+    }
+}
+
+impl MasternodeEntry {
+    pub fn save_platform_ping_info_in_context(&self, context: &ManagedContext) {
+        MasternodeEntity::update_plaform_ping_info(&self.provider_registration_transaction_hash, self.platform_ping, self.platform_ping_date, context)
+            .expect("Can't update masternode entry entity with platform ping info");
+    }
+
+}
