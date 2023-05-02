@@ -1,4 +1,6 @@
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum PeerStatus {
+    #[default]
     Unknown = -1,
     Disconnected = 0,
     Connecting,

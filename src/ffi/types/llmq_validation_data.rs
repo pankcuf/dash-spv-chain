@@ -1,5 +1,5 @@
 use crate::chain::common::LLMQVersion;
-use crate::types;
+use crate::ffi::types;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]

@@ -1,11 +1,6 @@
-use byte::ctx::Endian;
 use byte::{BytesExt, TryRead};
-use diesel::{Insertable, QueryResult, QuerySource, Table};
-use diesel::insertable::CanInsertInSingleQuery;
-use diesel::query_builder::{AsChangeset, QueryFragment};
-use diesel::sqlite::Sqlite;
 use crate::chain::chain::Chain;
-use crate::chain::extension::transactions::Transactions;
+use crate::chain::ext::transactions::Transactions;
 use crate::chain::tx::instant_send_transaction_lock::InstantSendTransactionLock;
 use crate::chain::tx::provider_registration_transaction::ProviderRegistrationTransaction;
 use crate::crypto::{UInt256, UInt768};
@@ -18,12 +13,15 @@ use crate::chain::wallet::wallet::Wallet;
 use crate::consensus::Encodable;
 use crate::consensus::encode::VarInt;
 use crate::crypto::byte_util::{AsBytesVec, Zeroable};
-use crate::crypto::data_ops::DataAppend;
+use crate::derivation::derivation_path::IDerivationPath;
+use crate::util::data_append::DataAppend;
 use crate::keys::bls_key::BLSKey;
 use crate::keys::key::IKey;
 use crate::storage::manager::managed_context::ManagedContext;
-use crate::storage::models::entity::{Entity, EntityConvertible, EntityUpdates};
+use crate::storage::models::chain::chain::ChainEntity;
+use crate::storage::models::tx::transaction::NewTransactionEntity;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProviderUpdateRevocationTransaction {
     pub base: Transaction,
     pub provider_registration_transaction_hash: UInt256,
@@ -34,20 +32,6 @@ pub struct ProviderUpdateRevocationTransaction {
     pub payload_signature: Vec<u8>,
 
     pub provider_registration_transaction: Option<&'static ProviderRegistrationTransaction>,
-}
-
-impl EntityConvertible for ProviderUpdateRevocationTransaction {
-    fn to_entity<T, U>(&self) -> U where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite>, U: Insertable<T>, diesel::insertable::Values: QueryFragment<Sqlite> + CanInsertInSingleQuery<Sqlite> {
-        todo!()
-    }
-
-    fn to_update_values<T, V>(&self) -> Box<dyn EntityUpdates<V>> where T: Table, V: AsChangeset<Target=T> {
-        todo!()
-    }
-
-    fn from_entity<T: Entity>(entity: T, context: &ManagedContext) -> QueryResult<Self> {
-        todo!()
-    }
 }
 
 impl ITransaction for ProviderUpdateRevocationTransaction {
@@ -65,6 +49,10 @@ impl ITransaction for ProviderUpdateRevocationTransaction {
 
     fn tx_hash(&self) -> UInt256 {
         self.base.tx_hash()
+    }
+
+    fn tx_lock_time(&self) -> u32 {
+        self.base.tx_lock_time()
     }
 
     fn inputs(&self) -> Vec<TransactionInput> {
@@ -87,7 +75,7 @@ impl ITransaction for ProviderUpdateRevocationTransaction {
         if !self.tx_hash().is_zero() {
             return self.to_data().len();
         }
-        self.base.size() + VarInt(self.payload_data().len() as u64) + self.base_payload_data().len() + 96
+        self.base.size() + VarInt(self.payload_data().len() as u64).len() + self.base_payload_data().len() + 96
     }
 
     fn payload_data(&self) -> Vec<u8> {
@@ -123,9 +111,26 @@ impl ITransaction for ProviderUpdateRevocationTransaction {
     }
 
     fn has_non_dust_output_in_wallet(&self, wallet: &Wallet) -> bool {
-        self.base.has_non_dust_output_in_wallet()
+        self.base.has_non_dust_output_in_wallet(wallet)
     }
 
+    fn set_initial_persistent_attributes_in_context(&mut self, context: &ManagedContext) -> bool {
+        todo!()
+    }
+
+    fn to_entity_with_chain_entity(&self, chain_entity: ChainEntity) -> NewTransactionEntity {
+        todo!()
+    }
+
+    fn trigger_updates_for_local_references(&self) {
+        if let Some(mut local_masternode) = self.chain().masternode_manager().local_masternode_having_provider_registration_transaction_hash(&self.provider_registration_transaction_hash) {
+            local_masternode.update_with_update_revocation_transaction(self, true);
+        }
+    }
+
+    fn load_blockchain_identities_from_derivation_paths(&mut self, derivation_paths: Vec<&dyn IDerivationPath>) {
+        self.base.load_blockchain_identities_from_derivation_paths(derivation_paths)
+    }
 }
 
 impl ProviderUpdateRevocationTransaction {
@@ -154,7 +159,7 @@ impl ProviderUpdateRevocationTransaction {
     pub fn check_payload_signature(&mut self) -> bool {
         assert!(self.provider_registration_transaction.is_some(), "We need a provider registration transaction");
         // todo: check use_legacy_bls has taken from appropriate place
-        let key = BLSKey::key_with_public_key(&self.provider_registration_transaction().unwrap().operator_key, self.chain().use_legacy_bls());
+        let key = BLSKey::key_with_public_key(self.provider_registration_transaction().unwrap().operator_key.clone(), self.chain().use_legacy_bls());
         self.check_payload_signature_with_key(&key)
     }
 
@@ -163,9 +168,9 @@ impl ProviderUpdateRevocationTransaction {
         key.verify(self.payload_hash().as_bytes_vec(), &self.payload_signature)
     }
 
-    pub fn sign_payload_with_key(&mut self, private_key: BLSKey) {
+    pub fn sign_payload_with_key(&mut self, private_key: &BLSKey) {
         // ATTENTION If this ever changes from ECDSA, change the max signature size defined above
-        self.payload_signature = private_key.sign_data(self.payload_data_for_hash());
+        self.payload_signature = private_key.sign_data(&self.payload_data_for_hash()).0.to_vec();
     }
 
     pub fn base_payload_data(&self) -> Vec<u8> {
@@ -188,10 +193,9 @@ impl ProviderUpdateRevocationTransaction {
 
 }
 
-// todo: migrate to custom trait which allows passing of custom context, like Chain etc.
-impl<'a> TryRead<'a, Endian> for ProviderUpdateRevocationTransaction {
-    fn try_read(bytes: &'a [u8], ctx: Endian) -> byte::Result<(Self, usize)> {
-        let (mut base, mut offset) = Transaction::try_read(bytes, ctx)?;
+impl<'a> TryRead<'a, &Chain> for ProviderUpdateRevocationTransaction {
+    fn try_read(bytes: &'a [u8], chain: &Chain) -> byte::Result<(Self, usize)> {
+        let (mut base, mut offset) = Transaction::try_read(bytes, chain)?;
         base.tx_type = TransactionType::ProviderUpdateRevocation;
         let _extra_payload_size = bytes.read_with::<VarInt>(&mut offset, byte::LE)?;
         let provider_update_revocation_transaction_version = bytes.read_with::<u16>(&mut offset, byte::LE)?;
@@ -199,7 +203,7 @@ impl<'a> TryRead<'a, Endian> for ProviderUpdateRevocationTransaction {
         let reason = bytes.read_with::<u16>(&mut offset, byte::LE)?;
         let inputs_hash = bytes.read_with::<UInt256>(&mut offset, byte::LE)?;
         let payload_signature = bytes.read_with::<UInt768>(&mut offset, byte::LE)?;
-        base.payload_offset = *offset;
+        base.payload_offset = offset;
         let mut tx = Self {
             base,
             provider_registration_transaction_hash,
@@ -210,8 +214,8 @@ impl<'a> TryRead<'a, Endian> for ProviderUpdateRevocationTransaction {
             provider_registration_transaction: None
         };
         // todo verify inputs hash
-        assert_eq!(tx.payload_data().len(), *offset, "Payload length doesn't match ");
+        assert_eq!(tx.payload_data().len(), offset, "Payload length doesn't match ");
         tx.base.tx_hash = UInt256::sha256d(&tx.to_data());
-        Ok((tx, *offset))
+        Ok((tx, offset))
     }
 }

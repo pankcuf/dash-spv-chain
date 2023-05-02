@@ -1,26 +1,62 @@
 use std::collections::HashSet;
-use crate::crypto::UInt256;
+use crate::crypto::{UInt160, UInt256};
 use crate::chain::chain::Chain;
-use crate::derivation::derivation_path::{DerivationPath, DerivationPathKind, IDerivationPath};
+use crate::chain::wallet::wallet::Wallet;
+use crate::derivation::derivation_path::{DerivationPath, IDerivationPath};
 use crate::derivation::derivation_path_feature_purpose::DerivationPathFeaturePurpose;
+use crate::derivation::derivation_path_kind::DerivationPathKind;
 use crate::derivation::derivation_path_reference::DerivationPathReference;
 use crate::derivation::derivation_path_type::DerivationPathType;
 use crate::derivation::simple_indexed_derivation_path::{ISimpleIndexedDerivationPath, SimpleIndexedDerivationPath};
-use crate::derivation::uint256_index_path::{IIndexPath, IndexPath};
+use crate::derivation::index_path::{IIndexPath, IndexPath};
 use crate::keys::key::IKey;
 use crate::keys::KeyType;
+use crate::storage::manager::managed_context::ManagedContext;
 
+#[derive(Debug, Default, PartialEq)]
 pub struct CreditFundingDerivationPath {
     pub base: SimpleIndexedDerivationPath,
 }
 
+// impl IIndexPath for CreditFundingDerivationPath {
+//     type Item = UInt256;
+//
+//     fn new(indexes: Vec<Self::Item>) -> Self {
+//         Self::b
+//     }
+//
+//     fn index_at_position(&self, position: usize) -> Self::Item {
+//         self.base.base.index_at_position(position)
+//     }
+//
+//     fn indexes(&self) -> &Vec<Self::Item> {
+//         self.b
+//     }
+// }
+
 impl IDerivationPath for CreditFundingDerivationPath {
-    fn signing_algorithm(&self) -> &KeyType {
+    fn chain(&self) -> &Chain {
+        self.base.chain()
+    }
+
+    fn wallet(&self) -> Option<&Wallet> {
+        self.base.wallet()
+    }
+
+    fn context(&self) -> &ManagedContext {
+        self.base.context()
+    }
+
+    fn signing_algorithm(&self) -> KeyType {
         self.base.signing_algorithm()
     }
 
-    fn is_derivation_path_equal(&self, other: &dyn IDerivationPath) -> bool {
-        self.base.is_derivation_path_equal(other)
+    fn reference(&self) -> &DerivationPathReference {
+        self.base.reference()
+    }
+
+    fn extended_public_key(&mut self) -> Option<&dyn IKey> {
+        self.base.extended_public_key()
     }
 
     fn has_extended_public_key(&self) -> bool {
@@ -35,8 +71,8 @@ impl IDerivationPath for CreditFundingDerivationPath {
         self.base.used_addresses()
     }
 
-    fn contains_address(&self, address: Option<String>) -> bool {
-        self.base.contains_address(address)
+    fn string_representation(&mut self) -> &str {
+        self.base.string_representation()
     }
 
     fn standalone_extended_public_key_unique_id(&mut self) -> Option<String> {
@@ -51,93 +87,111 @@ impl IDerivationPath for CreditFundingDerivationPath {
         self.base.balance()
     }
 
-    fn public_key_at_index_path<T>(&self, index_path: &IndexPath<T>) -> Option<dyn IKey> {
-        todo!()
+    fn set_balance(&mut self, amount: u64) {
+        self.base.set_balance(amount);
     }
 
-    fn base_index_path<T>(&self) -> IndexPath<T> {
-        todo!()
+    fn private_key_at_index_path_from_seed<KEY: IKey>(&self, index_path: &IndexPath<u32>, seed: &Vec<u8>) -> Option<KEY> where Self: Sized {
+        self.base.private_key_at_index_path_from_seed(index_path, seed)
+    }
+
+    fn index_path_for_known_address(&self, address: &String) -> Option<IndexPath<u32>> {
+        self.base.index_path_for_known_address(address)
+    }
+
+    fn generate_extended_public_key_from_seed(&mut self, seed: &Vec<u8>, wallet_unique_id: Option<&String>) -> Option<&dyn IKey> {
+        self.base.base.generate_extended_public_key_from_seed_and_store_private_key(seed, wallet_unique_id, false)
+    }
+
+    fn register_transaction_address(&mut self, address: &String) -> bool {
+        self.base.register_transaction_address(address)
     }
 }
 
 impl ISimpleIndexedDerivationPath for CreditFundingDerivationPath {
-    fn addresses_to_index(&self, index: u32) -> HashSet<String> {
-        todo!()
+
+    fn base(&self) -> &dyn IDerivationPath {
+        &self.base
+    }
+    fn addresses_to_index_using_cache(&mut self, index: u32, use_cache: bool, add_to_cache: bool) -> HashSet<String> {
+        self.base.addresses_to_index_using_cache(index, use_cache, add_to_cache)
     }
 
-    fn addresses_to_index_using_cache(&self, index: u32, use_cache: bool, add_to_cache: bool) -> HashSet<String> {
-        todo!()
+    fn index_of_known_address(&self, address: &String) -> Option<u32> {
+        self.base.index_of_known_address(address)
     }
 
-    fn address_at_index(&self, index: u32) -> Option<String> {
-        todo!()
+    fn index_of_known_address_hash_for_chain(&self, hash: &UInt160, chain: &Chain) -> Option<u32> {
+        self.base.index_of_known_address_hash_for_chain(hash, chain)
     }
 
-    fn address_is_used_at_index(&self, index: u32) -> bool {
-        todo!()
-    }
-
-    fn index_path_of_known_address(&self, address: String) -> Option<dyn IIndexPath> {
-        todo!()
-    }
-
-    fn index_of_known_address(&self, address: Option<String>) -> Option<u32> {
-        todo!()
-    }
-
-    fn public_key_data_at_index(&self, index: u32) -> Option<Vec<u8>> {
-        todo!()
+    fn public_key_data_at_index(&mut self, index: u32) -> Option<Vec<u8>> {
+        self.base.public_key_data_at_index(index)
     }
 }
 
 impl CreditFundingDerivationPath {
-    pub fn generate_extended_public_key_from_seed(&mut self, seed: &Vec<u8>, wallet_unique_id: Option<&String>) -> Option<&dyn IKey> {
-        self.base.base.generate_extended_public_key_from_seed_and_store_private_key(seed, wallet_unique_id, false)
-    }
-
-    fn blockchain_identity_funding_derivation_path_for_chain(reference: DerivationPathReference, last_index: u32, chain: &Chain) -> Self {
+    fn identity_funding_derivation_path_for_chain(reference: DerivationPathReference, last_index: u32, chain: &Chain) -> Self {
         Self {
             base: SimpleIndexedDerivationPath {
                 base: DerivationPath::derivation_path_with_indexes(
                     vec![
-                        UInt256::from_u32(DerivationPathFeaturePurpose::DEFAULT.into()),
-                        UInt256::from_u32(chain.params.chain_type.coin_type()),
-                        UInt256::from_u32(DerivationPathFeaturePurpose::IDENTITIES.into()),
-                        UInt256::from_u32(last_index),
+                        DerivationPathFeaturePurpose::Default.into_u256(),
+                        UInt256::from(chain.r#type().coin_type()),
+                        DerivationPathFeaturePurpose::Identities.into_u256(),
+                        UInt256::from(last_index),
                     ],
                     vec![true, true, true, true],
                     DerivationPathType::CreditFunding,
                     KeyType::ECDSA,
                     reference,
                     chain
-                )
+                ),
+                ..Default::default()
             },
             ..Default::default()
         }
     }
 
     pub fn identity_registration_funding_derivation_path_for_chain(chain: &Chain) -> Self {
-        Self::blockchain_identity_funding_derivation_path_for_chain(
+        Self::identity_funding_derivation_path_for_chain(
             DerivationPathReference::BlockchainIdentityCreditRegistrationFunding,
-            DerivationPathFeaturePurpose::IDENTITIES_SUBFEATURE_REGISTRATION.into(),
+            DerivationPathFeaturePurpose::IdentitiesSubfeatureRegistration.into(),
             chain
         )
     }
 
     pub fn identity_topup_funding_derivation_path_for_chain(chain: &Chain) -> Self {
-        Self::blockchain_identity_funding_derivation_path_for_chain(
+        Self::identity_funding_derivation_path_for_chain(
             DerivationPathReference::BlockchainIdentityCreditTopupFunding,
-            DerivationPathFeaturePurpose::IDENTITIES_SUBFEATURE_TOPUP.into(),
+            DerivationPathFeaturePurpose::IdentitiesSubfeatureTopup.into(),
             chain
         )
     }
 
     pub fn identity_invitation_funding_derivation_path_for_chain(chain: &Chain) -> Self {
-        Self::blockchain_identity_funding_derivation_path_for_chain(
+        Self::identity_funding_derivation_path_for_chain(
             DerivationPathReference::BlockchainIdentityCreditInvitationFunding,
-            DerivationPathFeaturePurpose::IDENTITIES_SUBFEATURE_INVITATIONS.into(),
+            DerivationPathFeaturePurpose::IdentitiesSubfeatureInvitations.into(),
             chain
         )
     }
 
+    pub fn identity_registration_funding_derivation_path_for_wallet(wallet: &Wallet) -> Self {
+        let mut path = Self::identity_registration_funding_derivation_path_for_chain(wallet.chain);
+        path.base.base.wallet = Some(wallet);
+        path
+    }
+
+    pub fn identity_topup_funding_derivation_path_for_wallet(wallet: &Wallet) -> Self {
+        let mut path = Self::identity_topup_funding_derivation_path_for_chain(wallet.chain);
+        path.base.base.wallet = Some(wallet);
+        path
+    }
+
+    pub fn identity_invitation_funding_derivation_path_for_wallet(wallet: &Wallet) -> Self {
+        let mut path = Self::identity_invitation_funding_derivation_path_for_chain(wallet.chain);
+        path.base.base.wallet = Some(wallet);
+        path
+    }
 }

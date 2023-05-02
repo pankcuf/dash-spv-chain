@@ -1,20 +1,19 @@
-use bitcoin_hashes::{Hash, sha256d};
 use byte::BytesExt;
 use crate::consensus::Encodable;
 use crate::consensus::encode::VarInt;
 use crate::crypto::{UInt256, UInt768};
 use crate::crypto::byte_util::{AsBytesVec, Zeroable};
-use crate::models::{LLMQEntry, MasternodeList};
+use crate::chain::masternode::{LLMQEntry, MasternodeList};
 use crate::chain::chain::Chain;
 use crate::chain::common::chain_type::IHaveChainSettings;
 use crate::chain::network::message;
 use crate::chain::tx::TransactionInput;
-use crate::crypto::primitives::utxo::UTXO;
+use crate::crypto::UTXO;
 use crate::keys::bls_key::BLSKey;
 use crate::keys::key::IKey;
 use crate::storage::models::chain::instant_send_lock::InstantSendLockEntity;
-use crate::storage::models::tx::transaction_input::TransactionInputEntity;
 
+#[derive(Debug, Default)]
 pub struct InstantSendTransactionLock {
     pub version: u8,
     pub chain: &'static Chain,
@@ -95,7 +94,7 @@ impl InstantSendTransactionLock {
         } else {
             UInt256::MIN
         };
-        let signature = message.read_with::<UInt768>(offset, byte::LE)?;
+        let signature = message.read_with::<UInt768>(offset, byte::LE).unwrap();
         Some(Self {
             version,
             chain,
@@ -116,7 +115,8 @@ impl InstantSendTransactionLock {
         if !self.request_id.is_zero() { return self.request_id }
         let mut writer: Vec<u8> = Vec::new();
         // TODO: shall we write isdlock here?
-        (message::Type::Islock.into() as String).enc(&mut writer);
+        let is_lock_type: String = message::Type::Islock.into();
+        is_lock_type.enc(&mut writer);
         VarInt(self.input_outpoints.len() as u64).enc(&mut writer);
         self.input_outpoints.iter().for_each(|utxo| {
             utxo.enc(&mut writer);
@@ -133,13 +133,12 @@ impl InstantSendTransactionLock {
         let var_int: VarInt = self.chain.r#type().is_llmq_type().into();
         var_int.enc(&mut writer);
         quorum.llmq_hash.enc(&mut writer);
-        self.request_id().llmq_hash.enc(&mut writer);
+        self.request_id().enc(&mut writer);
         self.transaction_hash.enc(&mut writer);
         UInt256::sha256d(&writer)
     }
 
-    //- (DSQuorumEntry *)findSigningQuorumReturnMasternodeList:(DSMasternodeList **)returnMasternodeList;
-    pub fn find_signing_quorum_and_masternode_list(&self) -> Option<(&LLMQEntry, &MasternodeList)> {
+    pub fn find_signing_quorum_and_masternode_list(&mut self) -> Option<(&LLMQEntry, &MasternodeList)> {
         // todo: check is vs isd type locks
         let r#type = self.chain.r#type().is_llmq_type();
         /*let mut result: Option<(&LLMQEntry, &MasternodeList)> = None;
@@ -154,15 +153,15 @@ impl InstantSendTransactionLock {
         result*/
         self.chain.masternode_manager().recent_masternode_lists().iter()
             .find_map(|list|
-                list.quorums_of_type(llmq_type).iter()
-                    .find_map(|quorum|
+                list.quorums_of_type(r#type).iter()
+                    .find_map(|&quorum|
                         self.verify_signature_against_quorum(quorum)
                             .then(|| (quorum, list))))
     }
 
     fn verify_signature_against_quorum(&mut self, quorum: &LLMQEntry) -> bool {
         // todo: check use_legacy_bls has taken from appropriate place
-        let key = BLSKey::key_with_public_key(&quorum.public_key, self.chain().use_legacy_bls_scheme());
+        let key = BLSKey::key_with_public_key(quorum.public_key.clone(), quorum.use_legacy_bls_scheme());
         let sign_id = self.sign_id_for_quorum_entry(quorum);
         key.verify(sign_id.as_bytes_vec(), self.signature.as_bytes_vec())
     }

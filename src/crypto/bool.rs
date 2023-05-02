@@ -5,7 +5,9 @@ use crate::consensus::Decodable;
 use crate::crypto::byte_util::{AsBytes, BytesDecodable};
 use crate::impl_bytes_decodable;
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, AsExpression, FromSqlRow)]
+// #[diesel(foreign_derive)]
+#[diesel(sql_type = diesel::sql_types::Bool)]
 pub struct Boolean(pub bool);
 
 impl<'a> TryRead<'a, Endian> for Boolean {
@@ -36,3 +38,20 @@ impl AsBytes for Boolean {
 }
 
 impl_bytes_decodable!(Boolean);
+
+// impl diesel::Expression for Boolean {
+//     type SqlType = Bool;
+// }
+
+
+// impl<DB> ToSql<Binary, DB> for dyn AsBytes where DB: Backend, Self: Debug {
+//     fn to_sql<W: Write>(&self, out: &mut Output<W, DB>) -> serialize::Result {
+//         self.as_bytes().to_sql(out)
+//     }
+// }
+
+// impl<'a> FromSql<Nullable<Binary>, Sqlite> for Option<UInt256> {
+//     fn from_sql(bytes: *const u8) -> deserialize::Result<Self> {
+//         UInt256::from_const(bytes)
+//     }
+// }

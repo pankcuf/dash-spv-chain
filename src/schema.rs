@@ -88,6 +88,7 @@ table! {
         base_id -> Integer,
         height -> Integer,
         merkle_root_mn_list -> Binary,
+        locked_amount -> BigInt,
     }
 }
 
@@ -235,9 +236,11 @@ table! {
 table! {
     invitations (id) {
         id -> Integer,
+        link -> Nullable<Text>,
+        name -> Nullable<Text>,
+        tag -> Nullable<Text>,
         identity_id -> Integer,
         chain_id -> Integer,
-        link -> Text,
     }
 }
 
@@ -293,7 +296,7 @@ table! {
         id -> Integer,
         block_id -> Integer,
         chain_id -> Integer,
-        masternodes_merkle_root -> Nullable<Binary>,
+        masternodes_merkle_root -> Binary,
         quorums_merkle_root -> Nullable<Binary>,
     }
 }
@@ -458,6 +461,7 @@ table! {
         value -> BigInt,
         spork_hash -> Binary,
         signature -> Binary,
+        marked_for_retrieval -> Nullable<SmallInt>,
     }
 }
 
@@ -500,13 +504,14 @@ table! {
         timestamp -> Timestamp,
         tx_type -> SmallInt,
         special_transaction_version -> Nullable<SmallInt>,
+        height -> Nullable<Integer>,
         ip_address -> Nullable<Binary>,
         port -> Nullable<SmallInt>,
-        provider_mode -> Nullable<Integer>,
-        provider_type -> Nullable<Integer>,
+        provider_mode -> Nullable<SmallInt>,
+        provider_type -> Nullable<SmallInt>,
         reason -> Nullable<Integer>,
         collateral_outpoint -> Nullable<Binary>,
-        operator_reward -> Nullable<Binary>,
+        operator_reward -> Nullable<SmallInt>,
         operator_key -> Nullable<Binary>,
         owner_key_hash -> Nullable<Binary>,
         voting_key_hash -> Nullable<Binary>,
@@ -585,6 +590,3 @@ allow_tables_to_appear_in_same_query!(
     transactions,
     users,
 );
-
-joinable!(chains -> derivation_paths(derivation_path_id));
-joinable!(derivation_paths -> addresses(address_id));

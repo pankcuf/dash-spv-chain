@@ -1,4 +1,6 @@
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum RegistrationStatus {
+    #[default]
     Unknown = 0,
     Registered = 1,
     Registering = 2,

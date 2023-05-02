@@ -4,6 +4,7 @@ use diesel::sqlite::Sqlite;
 use crate::derivation::derivation_path::IDerivationPath;
 use crate::schema::derivation_paths;
 use crate::storage::manager::managed_context::ManagedContext;
+use crate::storage::models::account::friend_request::FriendRequestAggregate;
 use crate::storage::models::common::address::AddressEntity;
 use crate::storage::models::entity::Entity;
 use crate::storage::models::tx::transaction_input::TransactionInputEntity;
@@ -13,6 +14,7 @@ use crate::storage::models::tx::transaction_output::TransactionOutputEntity;
 /// "publicKeyIdentifier == %@ && chain == %@"
 ///
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[diesel(table_name = derivation_paths)]
 pub struct DerivationPathEntity {
     pub id: i32,
     pub derivation_path: Vec<u8>,
@@ -28,7 +30,7 @@ pub struct DerivationPathEntity {
 
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="derivation_paths"]
+#[diesel(table_name = derivation_paths)]
 pub struct NewDerivationPathEntity {
     pub derivation_path: Vec<u8>,
     pub sync_block_height: i32,
@@ -37,39 +39,51 @@ pub struct NewDerivationPathEntity {
     pub chain_id: i32,
     pub account_id: Option<i32>,
     pub friend_request_id: Option<i32>,
-    pub address_ids: Vec<i32>,
-    pub identity_key_path_ids: Vec<i32>,
+    // pub address_ids: Vec<i32>,
+    // pub identity_key_path_ids: Vec<i32>,
 }
 
 impl Entity for DerivationPathEntity {
     type ID = derivation_paths::id;
-    type ChainId = derivation_paths::chain_id;
+    // type ChainId = derivation_paths::chain_id;
 
     fn id(&self) -> i32 {
         self.id
     }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        derivation_paths::dsl::derivation_paths
+        todo!()
+        //        derivation_paths::dsl::derivation_paths
     }
 }
 
 impl DerivationPathEntity {
+
+    pub fn get_addresses(&self, context: &ManagedContext) -> QueryResult<Vec<AddressEntity>> {
+        AddressEntity::get_by_derivation_path_id(self.id, context)
+    }
+
     pub fn derivation_path_entity_matching_derivation_path(path: &dyn IDerivationPath, context: &ManagedContext) -> QueryResult<DerivationPathEntity> {
         todo!()
     }
 
-    pub fn get_addresses(&self, context: &ManagedContext) -> QueryResult<Vec<AddressEntity>> {
-        AddressEntity::get_by_derivation_path_id(self.id, context)
+    pub fn derivation_path_entity_matching_derivation_path_associate_with_friend_request(path: &dyn IDerivationPath, friend_request: FriendRequestAggregate, context: &ManagedContext) -> QueryResult<DerivationPathEntity> {
+        todo!()
     }
 
     pub fn derivation_path_entity_matching_derivation_path_with_addresses(path: &dyn IDerivationPath, context: &ManagedContext) -> QueryResult<(DerivationPathEntity, Vec<AddressEntity>, Vec<TransactionInputEntity>, Vec<TransactionOutputEntity>)> {
         todo!()
     }
 
-    fn get(context: &ManagedContext) -> QueryResult<>
-    let data = users.inner_join(posts)
-    .select((name, title))
-    .load(&connection);
+    pub fn aggregate_addresses_with_their_relationships(path: &mut dyn IDerivationPath, context: &ManagedContext) -> QueryResult<(DerivationPathEntity, Vec<(AddressEntity, bool)>)> {
+        assert!(path.standalone_extended_public_key_unique_id().is_some(), "standaloneExtendedPublicKeyUniqueID must be set");
+        todo!()
+        //Self::
+    }
+
+    // fn get(context: &ManagedContext) -> QueryResult<>
+    // let data = users.inner_join(posts)
+    // .select((name, title))
+    // .load(&connection);
 
 }

@@ -1,8 +1,10 @@
-use std::cmp::{max, min};
 use crate::chain::chain::Chain;
 use crate::chain::chain_sync_phase::ChainSyncPhase;
 use crate::chain::dispatch_context::DispatchContext;
+use crate::chain::ext::store::Store;
+use crate::chain::sync_count_info::SyncCountInfo;
 use crate::notifications::{Notification, NotificationCenter};
+use crate::storage::manager::managed_context::ManagedContext;
 use crate::storage::models::common::peer::PeerEntity;
 use crate::storage::models::entity::Entity;
 
@@ -10,11 +12,17 @@ pub trait SyncProgress {
     fn assign_sync_weights(&mut self);
     fn chain_blocks_to_sync(&mut self) -> u32;
     fn chain_sync_progress(&mut self) -> f64;
+    fn terminal_headers_to_sync(&mut self) -> u32;
     fn terminal_header_sync_progress(&mut self) -> f64;
-    fn combined_sync_progress(&self) -> f64;
+    fn combined_sync_progress(&mut self) -> f64;
     fn start_sync(&self);
     fn stop_sync(&mut self);
     fn remove_non_mainnet_trusted_peer(&mut self);
+    fn reset_sync_count_info(&mut self, sync_count_info: SyncCountInfo, context: &ManagedContext) {
+        self.set_count(0, sync_count_info, context)
+    }
+
+    fn set_count(&mut self, count: u32, sync_count_info: SyncCountInfo, context: &ManagedContext);
 }
 
 impl SyncProgress for Chain {
@@ -30,16 +38,16 @@ impl SyncProgress for Chain {
         let chain_weight: u32 = chain_blocks;
         let terminal_weight = terminal_blocks / 4;
 
-        let masternode_weight = if masternode_lists_to_sync { (20000 + 2000 * (masternode_lists_to_sync - 1)) } else { 0 };
+        let masternode_weight = if masternode_lists_to_sync > 0 { 20000 + 2000 * (masternode_lists_to_sync - 1) } else { 0 };
         let total_weight = (chain_weight + terminal_weight + masternode_weight) as f64;
-        if total_weight == 0 {
+        if total_weight == 0.0 {
             self.terminal_header_sync_weight = 0f64;
             self.masternode_list_sync_weight = 0f64;
             self.chain_sync_weight = 1f64;
         } else {
             self.chain_sync_weight = chain_weight as f64 / total_weight;
             self.terminal_header_sync_weight = terminal_weight as f64 / total_weight;
-            self.masternode_list_sync_weight = masternodeWeight as f64 / total_weight;
+            self.masternode_list_sync_weight = masternode_weight as f64 / total_weight;
         }
     }
 
@@ -52,7 +60,7 @@ impl SyncProgress for Chain {
     }
 
     fn chain_sync_progress(&mut self) -> f64 {
-        if self.peer_manager().download_peer.is_none() && self.chain_sync_block_height == 0 {
+        if self.peer_manager().download_peer.is_none() && self.chain_sync_start_height == 0 {
             return 0f64;
         }
         if self.last_sync_block_height() >= self.estimated_block_height() {
@@ -61,44 +69,44 @@ impl SyncProgress for Chain {
         let last_block_height = self.last_sync_block_height();
         let estimated_block_height = self.estimated_block_height() as f64;
         let sync_start_height = self.chain_sync_start_height;
-        if estimated_block_height == 0 {
+        if estimated_block_height == 0f64 {
             return 0f64;
         }
-        if sync_start_height <= last_block_height {}
-        let progress = if sync_start_height > last_block_height {
-            last_block_height / estimated_block_height;
+        if sync_start_height > last_block_height {
+            1f64.min(0f64.max(0.1 + 0.9 * last_block_height as f64 / estimated_block_height))
+        } else if estimated_block_height as u32 - sync_start_height == 0 {
+            0f64
         } else {
-            if estimated_block_height - sync_start_height == 0 {
-                return 0f64;
-            }
-            (last_block_height - sync_start_height) / (estimated_block_height - sync_start_height);
-        };
-        min(1f64, max(0f64, 0.1 + 0.9 * progress))
+            1f64.min(0f64.max(0.1 + 0.9 * (last_block_height as f64 - sync_start_height as f64) / (estimated_block_height - sync_start_height as f64)))
+        }
+    }
+
+    fn terminal_headers_to_sync(&mut self) -> u32 {
+        if self.last_terminal_block_height() >= self.estimated_block_height() { 0 } else { self.estimated_block_height() - self.last_terminal_block_height() }
     }
 
     fn terminal_header_sync_progress(&mut self) -> f64 {
         if self.peer_manager().download_peer.is_none() && self.terminal_sync_start_height == 0 {
-            return 0f64;
-        }
-        if self.last_terminal_block_height() >= self.estimated_block_height() {
-            return 1f64;
-        }
-        let mut last_block_height = self.last_terminal_block_height();
-        let estimated_block_height = self.estimated_block_height();
-        let sync_start_height = self.terminal_sync_start_height;
-        let progress = if sync_start_height > last_block_height {
-            last_block_height / estimated_block_height
+            0f64
+        } else if self.last_terminal_block_height() >= self.estimated_block_height() {
+            1f64
         } else {
-            (last_block_height - sync_start_height) / (estimated_block_height - sync_start_height);
-        };
-        min(1f64, max(0f64, 0.1 + 0.9 * progress))
+            let mut last_block_height = self.last_terminal_block_height() as f64;
+            let estimated_block_height = self.estimated_block_height() as f64;
+            let sync_start_height = self.terminal_sync_start_height as f64;
+            1f64.min(0f64.max(0.1 + 0.9 * if sync_start_height > last_block_height {
+                last_block_height / estimated_block_height
+            } else {
+                (last_block_height - sync_start_height) / (estimated_block_height - sync_start_height)
+            }))
+        }
     }
 
     fn combined_sync_progress(&mut self) -> f64 {
-        if (self.terminal_header_sync_weight + self.chain_sync_weight + self.masternode_list_sync_weight) == 0 {
+        if (self.terminal_header_sync_weight + self.chain_sync_weight + self.masternode_list_sync_weight) == 0.0 {
             if self.peer_manager().connected { 1f64 } else { 0f64 }
         } else {
-            let progress = self.terminal_header_sync_progress() * self.terminal_header_sync_weight + self.masternode_manager().masternode_list_and_quorums_sync_progress * self.masternode_list_sync_weight + self.chain_sync_progress() * self.chain_sync_weight;
+            let progress = self.terminal_header_sync_progress() * self.terminal_header_sync_weight + self.masternode_manager().masternode_list_and_quorums_sync_progress() * self.masternode_list_sync_weight + self.chain_sync_progress() * self.chain_sync_weight;
             if progress < 0.99995 {
                 progress
             } else {
@@ -126,11 +134,28 @@ impl SyncProgress for Chain {
             self.stop_sync();
             self.peer_manager().remove_trusted_peer_host();
             self.peer_manager().clear_peers();
-            match PeerEntity::delete_for_chain_type(self.r#type(), self.chain_context()) {
+            match PeerEntity::delete_for_chain_type::<crate::schema::peers::dsl::peers>(self.r#type(), self.chain_context()) {
                 Ok(deleted) => println!("All peer entities for chain {:?} are deleted", self.r#type()),
                 Err(err) => println!("Error deleting peer entities: {}", err)
             }
 
         }
     }
+
+    fn set_count(&mut self, count: u32, sync_count_info: SyncCountInfo, context: &ManagedContext) {
+        match sync_count_info {
+            SyncCountInfo::GovernanceObject => {
+                self.total_governance_objects_count = count;
+                self.save_in_context(context);
+            },
+            SyncCountInfo::GovernanceObjectVote => {
+                if let Some(mut obj) = &self.governance_sync_manager().current_governance_sync_object {
+                    obj.total_governance_vote_count = count;
+                    obj.save();
+                }
+            },
+            _ => {}
+        }
+    }
+
 }

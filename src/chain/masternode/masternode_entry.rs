@@ -1,20 +1,21 @@
 use byte::ctx::Endian;
+use byte::LE;
 use byte::{BytesExt, TryRead};
 use std::collections::BTreeMap;
 use std::hash::Hasher;
 use std::net::IpAddr;
 use crate::chain::common::{BlockData, SocketAddress};
+use crate::chain::masternode::OperatorPublicKey;
 use crate::consensus::Encodable;
-use crate::crypto::byte_util::{AsBytes, Zeroable};
-use crate::crypto::data_ops::short_hex_string_from;
+use crate::crypto::byte_util::{AsBytes, BytesDecodable, Zeroable};
+use crate::util::data_ops::short_hex_string_from;
 use crate::crypto::{UInt128, UInt160, UInt256, UInt384};
-use crate::hashes::{sha256, sha256d, Hash};
-use crate::models::OperatorPublicKey;
+use crate::hashes::{Hash, sha256d};
+use crate::impl_bytes_decodable;
 use crate::storage::manager::managed_context::ManagedContext;
 use crate::storage::models::masternode::MasternodeEntity;
-use crate::util::crypto::{address_from_hash160_for_chain, address_with_public_key_data};
 
-#[derive(Clone, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Clone, Default, Ord, PartialOrd, Eq)]
 pub struct MasternodeEntry {
     pub provider_registration_transaction_hash: UInt256,
     pub confirmed_hash: UInt256,
@@ -32,8 +33,9 @@ pub struct MasternodeEntry {
 
     pub platform_ping: u64,
     pub platform_ping_date: u64,
-
 }
+impl_bytes_decodable!(MasternodeEntry);
+
 impl std::fmt::Debug for MasternodeEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MasternodeEntry")
@@ -215,13 +217,13 @@ impl MasternodeEntry {
         format!("{}", self.socket_address.port)
     }
 
-    pub fn voting_address(&self) -> Option<String> {
-        address_from_hash160_for_chain(&self.key_id_voting, self.chain)
-    }
-
-    pub fn operator_address(&self) -> Option<String> {
-        address_with_public_key_data(self.operator_public_key.to_bytes_vec(), self.chain)
-    }
+    // pub fn voting_address(&self) -> Option<String> {
+    //     Some(Address::from_hash160_for_script_map(&self.key_id_voting, &self.chain().params.script_map))
+    // }
+    //
+    // pub fn operator_address(&self) -> Option<String> {
+    //     Some(Address::with_public_key_data(self.operator_public_key.data.to_bytes_vec(), &self.chain().params.script_map))
+    // }
 
     pub fn payload_data(&self) -> UInt256 {
         Self::calculate_entry_hash(

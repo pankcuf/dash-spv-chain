@@ -1,72 +1,84 @@
 use std::collections::HashMap;
 use byte::{BytesExt, TryRead};
-use byte::ctx::Endian;
-use chrono::NaiveDateTime;
-use diesel::query_builder::{AsChangeset, QueryFragment};
-use diesel::{Insertable, QueryResult, QuerySource, Table};
-use diesel::insertable::CanInsertInSingleQuery;
-use diesel::sqlite::Sqlite;
+// use diesel::query_builder::QueryFragment;
+// use diesel::{Insertable, QueryResult, QuerySource, Table};
+// use diesel::insertable::CanInsertInSingleQuery;
+// use diesel::sqlite::Sqlite;
 use crate::consensus::Encodable;
 use crate::consensus::encode::VarInt;
 use crate::crypto::{UInt256, VarBytes};
-use crate::crypto::byte_util::{BytesDecodable, Zeroable};
+use crate::crypto::byte_util::{BytesDecodable, clone_into_array, Zeroable};
 use crate::crypto::var_array::VarArray;
 use crate::chain::block::{Block, BLOCK_UNKNOWN_HEIGHT, IBlock};
 use crate::chain::chain::{Chain, LastPersistedChainInfo};
 use crate::chain::chain_lock::ChainLock;
 use crate::chain::checkpoint::Checkpoint;
 use crate::chain::common::{MerkleTree, MerkleTreeHashFunction};
-use crate::schema::blocks;
-use crate::storage::manager::managed_context::ManagedContext;
 use crate::storage::models::chain::block::{BlockEntity, NewBlockEntity};
-use crate::storage::models::entity::{Entity, EntityConvertible, EntityUpdates, ModelConvertible};
-use crate::util::crypto::x11_hash;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct MerkleBlock {
     pub base: Block,
     pub merkle_tree: MerkleTree,
 }
 
-impl EntityConvertible for MerkleBlock {
-    fn to_entity<T, U>(&self) -> U
-        where
-            T: Table + QuerySource,
-            T::FromClause: QueryFragment<Sqlite>,
-            U: Insertable<T>,
-            diesel::insertable::Values: QueryFragment<Sqlite> + CanInsertInSingleQuery<Sqlite> {
-        let mut entity: NewBlockEntity = self.base.to_entity();
+impl Default for MerkleBlock {
+    fn default() -> Self {
+        Self { base: Block::default(), merkle_tree: MerkleTree::default() }
+    }
+}
+
+impl From<MerkleBlock> for NewBlockEntity {
+    fn from(value: MerkleBlock) -> Self {
+        let mut entity: NewBlockEntity = value.base.into();
         let mut hashes_buffer = Vec::<u8>::new();
-        self.merkle_tree.hashes
+        value.merkle_tree.hashes
             .iter()
             .for_each(|hash| {
                 hash.enc(&mut hashes_buffer);
             });
-        entity.flags = Some(self.merkle_tree.flags.clone());
+        entity.flags = Some(value.merkle_tree.flags.clone());
         entity.hashes = Some(hashes_buffer);
         entity
     }
-
-    fn to_update_values<T, V>(&self) -> Box<dyn EntityUpdates<V>>
-        where
-            T: Table,
-            V: AsChangeset<Target=T> {
-        let mut values = self.base.to_update_values();
-        let mut hashes_buffer = Vec::<u8>::new();
-        self.merkle_tree.hashes
-            .iter()
-            .for_each(|hash| {
-                hash.enc(&mut hashes_buffer);
-            });
-        values.append(blocks::hashes.eq(hashes_buffer));
-        values.append(blocks::flags.eq(&self.merkle_tree.flags));
-        values
-    }
-
-    fn from_entity<T: Entity>(entity: T, context: &ManagedContext) -> QueryResult<Self> {
-        todo!()
-    }
 }
+
+// impl EntityConvertible for MerkleBlock {
+//     fn to_entity<T, U>(&self) -> U
+//         where
+//             T: Table + QuerySource,
+//             T::FromClause: QueryFragment<Sqlite>,
+//             U: Insertable<T>,
+//             U::Values: QueryFragment<Sqlite> + CanInsertInSingleQuery<Sqlite> {
+//         let mut entity: NewBlockEntity = self.base.to_entity();
+//         let mut hashes_buffer = Vec::<u8>::new();
+//         self.merkle_tree.hashes
+//             .iter()
+//             .for_each(|hash| {
+//                 hash.enc(&mut hashes_buffer);
+//             });
+//         entity.flags = Some(self.merkle_tree.flags.clone());
+//         entity.hashes = Some(hashes_buffer);
+//         entity
+//     }
+//
+//     fn to_update_values(&self) -> Box<dyn EntityUpdates<bool, ResultType = (bool, )>> {
+//         let mut values = self.base.to_update_values();
+//         let mut hashes_buffer = Vec::<u8>::new();
+//         self.merkle_tree.hashes
+//             .iter()
+//             .for_each(|hash| {
+//                 hash.enc(&mut hashes_buffer);
+//             });
+//         values.append(blocks::hashes.eq(hashes_buffer));
+//         values.append(blocks::flags.eq(&self.merkle_tree.flags));
+//         values
+//     }
+//
+//     fn from_entity<T: Entity>(entity: T, context: &ManagedContext) -> QueryResult<Self> {
+//         todo!()
+//     }
+// }
 
 // impl ModelConvertible for MerkleBlock {
 //     type Item = ();
@@ -129,18 +141,17 @@ impl IBlock for MerkleBlock {
     }
 
     fn to_data(&self) -> Vec<u8> {
-        let mut buffer: Vec<u8> = Vec::new();
-        self.base.to_data().enc(&mut buffer);
+        let mut writer: Vec<u8> = self.base.to_data();
         if self.base.total_transactions > 0 {
-            self.base.total_transactions.enc(&mut buffer);
-            VarInt(self.merkle_tree.hashes.len() as u64).enc(&mut buffer);
+            self.base.total_transactions.enc(&mut writer);
+            VarInt(self.merkle_tree.hashes.len() as u64).enc(&mut writer);
             self.merkle_tree.hashes.iter().for_each(|hash| {
-                hash.enc(&mut buffer);
+                hash.enc(&mut writer);
             });
-            VarInt(self.merkle_tree.flags.len() as u64).enc(&mut buffer);
-            self.merkle_tree.flags.enc(&mut buffer);
+            VarInt(self.merkle_tree.flags.len() as u64).enc(&mut writer);
+            self.merkle_tree.flags.enc(&mut writer);
         }
-        buffer
+        writer
     }
 
     fn timestamp(&self) -> u32 {
@@ -159,6 +170,14 @@ impl IBlock for MerkleBlock {
         self.base.set_chain_work(chain_work);
     }
 
+    fn set_chain_locked_with_chain_lock(&mut self, chain_lock: &mut ChainLock) {
+        self.base.set_chain_locked_with_chain_lock(chain_lock);
+    }
+
+    fn set_chain_locked_with_equivalent_block(&mut self, block: &dyn IBlock) {
+        self.base.set_chain_locked_with_equivalent_block(block);
+    }
+
     fn chain_locked(&self) -> bool {
         self.base.chain_locked()
     }
@@ -175,26 +194,21 @@ impl IBlock for MerkleBlock {
         self.base.is_valid()
     }
 
-    fn can_calculate_difficulty_with_previous_blocks(&self, previous_blocks: &HashMap<UInt256, dyn IBlock>) -> bool {
+    fn is_merle_tree_valid(&self) -> bool {
+        self.merkle_tree.has_root(self.merkle_root())
+    }
+
+    fn can_calculate_difficulty_with_previous_blocks(&self, previous_blocks: &HashMap<UInt256, &dyn IBlock>) -> bool {
         self.base.can_calculate_difficulty_with_previous_blocks(previous_blocks)
     }
 
-    fn verify_difficulty_with_previous_blocks(&self, previous_blocks: &HashMap<UInt256, dyn IBlock>) -> (bool, u32) {
+    fn verify_difficulty_with_previous_blocks(&self, previous_blocks: &HashMap<UInt256, &dyn IBlock>) -> (bool, u32) {
         self.base.verify_difficulty_with_previous_blocks(previous_blocks)
     }
 }
 
 impl MerkleBlock {
     pub fn from_entity(entity: &BlockEntity, chain: &Chain) -> Option<Self> {
-        let mut merkle_hashes = Vec::<UInt256>::new();
-        if let Some(hashes) = &entity.hashes {
-            (0..hashes.len())
-                .step_by(std::mem::size_of::<UInt256>())
-                .for_each(|offset| {
-                    let hash = hashes[offset..offset+std::mem::size_of::<UInt256>()] as [u8; 32];
-                    merkle_hashes.push(UInt256(hash));
-                })
-        }
         Some(Self {
             base: Block {
                 block_hash: entity.block_hash,
@@ -212,7 +226,13 @@ impl MerkleBlock {
             },
             merkle_tree: MerkleTree {
                 tree_element_count: 0,
-                hashes: merkle_hashes,
+                hashes: entity.hashes
+                    .map(|hashes|
+                        (0..hashes.len())
+                            .step_by(std::mem::size_of::<UInt256>())
+                            .map(|offset| UInt256(clone_into_array(&hashes[offset..offset+std::mem::size_of::<UInt256>()])))
+                            .collect())
+                    .unwrap_or(vec![]),
                 flags: entity.flags.unwrap_or(vec![]),
                 hash_function: MerkleTreeHashFunction::SHA256_2
             }
@@ -226,18 +246,14 @@ impl MerkleBlock {
             return None;
         }
         let offset = &mut 0;
-        let version = bytes.read_with::<u32>(offset, byte::LE)?;
-        let prev_block = bytes.read_with::<UInt256>(offset, byte::LE)?;
-        let merkle_root = bytes.read_with::<UInt256>(offset, byte::LE)?;
-        let timestamp = bytes.read_with::<u32>(offset, byte::LE)?;
-        let target = bytes.read_with::<u32>(offset, byte::LE)?;
-        let nonce = bytes.read_with::<u32>(offset, byte::LE)?;
-        let total_transactions = bytes.read_with::<u32>(offset, byte::LE)?;
-        let hashes = if let Some(arr) = VarArray::<UInt256>::from_bytes(bytes, offset) {
-            arr.1
-        } else {
-            vec![]
-        };
+        let version = bytes.read_with::<u32>(offset, byte::LE).ok()?;
+        let prev_block = bytes.read_with::<UInt256>(offset, byte::LE).ok()?;
+        let merkle_root = bytes.read_with::<UInt256>(offset, byte::LE).ok()?;
+        let timestamp = bytes.read_with::<u32>(offset, byte::LE).ok()?;
+        let target = bytes.read_with::<u32>(offset, byte::LE).ok()?;
+        let nonce = bytes.read_with::<u32>(offset, byte::LE).ok()?;
+        let total_transactions = bytes.read_with::<u32>(offset, byte::LE).ok()?;
+        let hashes = VarArray::<UInt256>::from_bytes(bytes, offset).map_or(vec![], |arr| arr.1);
         let merkle_flags_var_bytes = VarBytes::from_bytes(bytes, offset)?.1;
 
         let merkle_tree = MerkleTree {
@@ -297,24 +313,16 @@ impl MerkleBlock {
     //     }
     // }
 
-    // pub fn init_with_checkpoint(checkpoint: &Checkpoint, chain: &Chain) -> Self {
-    //     let base = Block::init_with_version(2, checkpoint.timestamp, checkpoint.height, checkpoint.hash, UInt256::MIN, checkpoint.chain_work, checkpoint.merkle_root, checkpoint.target, chain);
-    //     assert!(!checkpoint.chain_work.is_zero(), "Chain work must be set");
-    //     let mut s = Self {
-    //         base,
-    //         merkle_tree: MerkleTree {
-    //             tree_element_count: 0,
-    //             hashes: vec![],
-    //             flags: vec![],
-    //             hash_function: MerkleTreeHashFunction::SHA256_2
-    //         }
-    //     }
+    pub fn init_with_checkpoint(checkpoint: &Checkpoint, chain: &Chain) -> Self {
+        let base = Block::init_with_version(2, checkpoint.timestamp, checkpoint.height, checkpoint.hash, UInt256::MIN, checkpoint.chain_work, checkpoint.merkle_root, checkpoint.target, chain);
+        assert!(!checkpoint.chain_work.is_zero(), "Chain work must be set");
+        Self { base, ..Default::default() }
     //
     //     if (!(self = [self initWithVersion:2 blockHash:checkpoint.blockHash prevBlock:UINT256_ZERO timestamp:checkpoint.timestamp merkleRoot:checkpoint.merkleRoot target:checkpoint.target chainWork:checkpoint.chainWork height:checkpoint.height onChain:chain])) return nil;
     //     NSAssert(uint256_is_not_zero(self.chainWork), @"block should have aggregate work set");
     //     return self;
     //
-    // }
+    }
 
     pub fn new(version: u32,
                block_hash: UInt256,
@@ -383,13 +391,14 @@ impl MerkleBlock {
 
     }
     pub fn init_with_chain_info(version: u32, chain_info: &LastPersistedChainInfo, chain: &Chain) -> Self {
-        last = MerkleBlock::new(2, self.last_persisted_chain_info.block_hash, UInt256::MIN, self.last_persisted_chain_info.block_timestamp, self.last_persisted_chain_info.block_height, self.last_persisted_chain_info.block_chain_work, self);
+        // last = MerkleBlock::new(2, chain.last_persisted_chain_info.block_hash, UInt256::MIN, chain.last_persisted_chain_info.block_timestamp, self.last_persisted_chain_info.block_height, self.last_persisted_chain_info.block_chain_work, self);
+        // todo: impl
         Self {
             base: Block {
                 block_hash: chain_info.block_hash,
                 version,
                 prev_block: UInt256::MIN,
-                merkle_root,
+                merkle_root: UInt256::MIN,
                 timestamp: chain_info.block_timestamp as u32,
                 target: 0,
                 nonce: 0,
@@ -398,7 +407,12 @@ impl MerkleBlock {
                 chain,
                 ..Default::default()
             },
-            merkle_tree: MerkleTree {}
+            merkle_tree: MerkleTree {
+                tree_element_count: 0,
+                hashes: vec![],
+                flags: vec![],
+                hash_function: MerkleTreeHashFunction::SHA256_2
+            }
         }
     }
 
@@ -439,7 +453,7 @@ impl MerkleBlock {
 
 // todo: migrate to custom trait which allows passing of custom context, like Chain etc.
 impl<'a> TryRead<'a, &'a Chain> for MerkleBlock {
-    fn try_read(bytes: &'a [u8], ctx: &'a Chain) -> byte::Result<(Self, usize)> {
+    fn try_read(bytes: &'a [u8], chain: &'a Chain) -> byte::Result<(Self, usize)> {
         let mut offset = &mut 0usize;
         assert!(bytes.len() < 80, "Merkle block message length less than 80");
         let version = bytes.read_with::<u32>(offset, byte::LE)?;
@@ -457,7 +471,7 @@ impl<'a> TryRead<'a, &'a Chain> for MerkleBlock {
         timestamp.enc(&mut data);
         target.enc(&mut data);
         nonce.enc(&mut data);
-        let block_hash = x11_hash(&data);
+        let block_hash = UInt256::x11_hash(&data);
         Ok((Self {
             base: Block {
                 block_hash,

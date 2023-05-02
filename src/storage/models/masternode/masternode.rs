@@ -1,17 +1,95 @@
-use std::ops::DerefMut;
+use std::collections::BTreeMap;
+use byte::ctx::Endian;
+use byte::{BytesExt, TryRead};
 use chrono::NaiveDateTime;
-use diesel::{BoolExpressionMethods, delete, ExpressionMethods, QueryDsl, QueryResult, QuerySource, RunQueryDsl, Table};
+use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl, QueryResult, QuerySource, RunQueryDsl, Table};
+use diesel::expression::AsExpression;
 use diesel::query_builder::QueryFragment;
+use diesel::serialize::{IsNull, Output};
+use diesel::sql_types::Binary;
 use diesel::sqlite::Sqlite;
 
-use crate::masternode;
 use crate::chain::common;
 use crate::chain::common::BlockData;
-use crate::crypto::{BDictionary, Boolean, UInt128, UInt160, UInt256, UInt384};
-use crate::models::{MasternodeEntry, OperatorPublicKey};
+use crate::crypto::{Boolean, UInt128, UInt160, UInt256};
+use crate::chain::masternode::{MasternodeEntry, OperatorPublicKey};
 use crate::schema::masternodes;
 use crate::storage::manager::managed_context::ManagedContext;
 use crate::storage::models::entity::Entity;
+use crate::storage::models::chain::chain::ChainEntity;
+use crate::storage::models::masternode::LocalMasternodeEntity;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, FromSqlRow, AsExpression)]
+#[diesel(sql_type = diesel::sql_types::Binary)]
+pub struct OperatorPublicKeyAtBlockHash {
+    pub block_hash: UInt256,
+    pub key: OperatorPublicKey
+}
+
+impl<'a> TryRead<'a, Endian> for OperatorPublicKeyAtBlockHash {
+    fn try_read(bytes: &'a [u8], endian: Endian) -> byte::Result<(Self, usize)> {
+        let offset = &mut 0;
+        let block_hash = bytes.read_with::<UInt256>(offset, endian).unwrap();
+        let key = bytes.read_with::<OperatorPublicKey>(offset, endian).unwrap();
+        Ok((Self { block_hash, key }, *offset))
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, FromSqlRow, AsExpression)]
+#[diesel(sql_type = diesel::sql_types::Binary)]
+pub struct MasternodeEntryHashAtBlockHash {
+    pub block_hash: UInt256,
+    pub entry_hash: UInt256
+}
+impl<'a> TryRead<'a, Endian> for MasternodeEntryHashAtBlockHash {
+    fn try_read(bytes: &'a [u8], endian: Endian) -> byte::Result<(Self, usize)> {
+        let offset = &mut 0;
+        let block_hash = bytes.read_with::<UInt256>(offset, endian).unwrap();
+        let entry_hash = bytes.read_with::<UInt256>(offset, endian).unwrap();
+        Ok((Self { block_hash, entry_hash }, *offset))
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, FromSqlRow, AsExpression)]
+#[diesel(sql_type = diesel::sql_types::Binary)]
+pub struct ValidityAtBlockHash {
+    pub block_hash: UInt256,
+    pub validity: Boolean,
+}
+impl<'a> TryRead<'a, Endian> for ValidityAtBlockHash {
+    fn try_read(bytes: &'a [u8], endian: Endian) -> byte::Result<(Self, usize)> {
+        let offset = &mut 0;
+        let block_hash = bytes.read_with::<UInt256>(offset, endian).unwrap();
+        let validity = bytes.read_with::<Boolean>(offset, endian).unwrap();
+        Ok((Self { block_hash, validity }, *offset))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, FromSqlRow, AsExpression)]
+#[diesel(sql_type = diesel::sql_types::Binary)]
+pub struct PrevValidity {
+    pub data: Vec<ValidityAtBlockHash>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, FromSqlRow, AsExpression)]
+#[diesel(sql_type = diesel::sql_types::Binary)]
+pub struct PrevOperatorBLSPublicKeys {
+    pub data: Vec<OperatorPublicKeyAtBlockHash>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, FromSqlRow, AsExpression)]
+#[diesel(sql_type = diesel::sql_types::Binary)]
+pub struct PrevMasternodeEntryHashes {
+    pub data: Vec<MasternodeEntryHashAtBlockHash>,
+}
+
+impl diesel::serialize::ToSql<Binary, Sqlite> for PrevValidity {
+    fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, Sqlite>) -> diesel::serialize::Result {
+        out.set_value(self);
+        Ok(IsNull::No)
+    }
+}
+
 
 /// queries
 /// "chain == %@"
@@ -21,7 +99,9 @@ use crate::storage::models::entity::Entity;
 /// "utxoHash == %@ && utxoIndex == %@" ????
 /// "providerRegistrationTransactionHash == %@"
 #[derive(Identifiable, Queryable, Associations, PartialEq, Eq, Debug)]
-// #[belongs_to(LocalMasternode)]
+#[diesel(belongs_to(LocalMasternodeEntity, foreign_key = local_masternode_id))]
+#[diesel(belongs_to(ChainEntity, foreign_key = chain_id))]
+#[diesel(table_name = masternodes)]
 pub struct MasternodeEntity {
     pub id: i32,
     pub address: i64,
@@ -35,9 +115,9 @@ pub struct MasternodeEntity {
     pub platform_version: Option<String>,
     pub known_confirmed_at_height: i32,
     pub update_height: i32,
-    pub prev_operator_bls_public_keys: BDictionary<'static, UInt256, OperatorPublicKey>,
-    pub prev_masternode_entry_hashes: BDictionary<'static, UInt256, UInt256>,
-    pub prev_validity: BDictionary<'static, UInt256, Boolean>,
+    pub prev_operator_bls_public_keys: PrevOperatorBLSPublicKeys,
+    pub prev_masternode_entry_hashes: PrevMasternodeEntryHashes,
+    pub prev_validity: PrevValidity,
     pub confirmed_hash: UInt256,
     pub ipv6_address: UInt128,
     pub key_id_voting: UInt160,
@@ -47,13 +127,15 @@ pub struct MasternodeEntity {
 
     pub chain_id: i32,
     pub local_masternode_id: Option<i32>,
-    pub address_ids: Vec<i32>,
-    pub governance_vote_ids: Vec<i32>,
-    pub masternode_list_ids: Vec<i32>,
+    // pub address_ids: Vec<i32>,
+    // pub governance_vote_ids: Vec<i32>,
+    // pub masternode_list_ids: Vec<i32>,
 }
 
 #[derive(Insertable, Associations, PartialEq, Eq, Debug)]
-#[table_name="masternodes"]
+#[diesel(belongs_to(LocalMasternodeEntity, foreign_key = local_masternode_id))]
+#[diesel(belongs_to(ChainEntity, foreign_key = chain_id))]
+#[diesel(table_name = masternodes)]
 pub struct NewMasternodeEntity {
     pub address: i64,
     pub port: i16,
@@ -66,9 +148,9 @@ pub struct NewMasternodeEntity {
     pub platform_version: Option<&'static str>,
     pub known_confirmed_at_height: i32,
     pub update_height: i32,
-    pub prev_operator_bls_public_keys: BDictionary<'static, UInt256, UInt384>,
-    pub prev_masternode_entry_hashes: BDictionary<'static, UInt256, UInt256>,
-    pub prev_validity: BDictionary<'static, UInt256, Boolean>,
+    pub prev_operator_bls_public_keys: PrevOperatorBLSPublicKeys,
+    pub prev_masternode_entry_hashes: PrevMasternodeEntryHashes,
+    pub prev_validity: PrevValidity,
     pub confirmed_hash: UInt256,
     pub ipv6_address: UInt128,
     pub key_id_voting: UInt160,
@@ -78,9 +160,9 @@ pub struct NewMasternodeEntity {
 
     pub chain_id: i32,
     pub local_masternode_id: Option<i32>,
-    pub address_ids: Vec<i32>,
-    pub governance_vote_ids: Vec<i32>,
-    pub masternode_list_ids: Vec<i32>,
+    // pub address_ids: Vec<i32>,
+    // pub governance_vote_ids: Vec<i32>,
+    // pub masternode_list_ids: Vec<i32>,
 }
 
 
@@ -90,14 +172,15 @@ pub struct NewMasternodeEntity {
 
 impl Entity for MasternodeEntity {
     type ID = masternodes::id;
-    type ChainId = masternodes::chain_id;
+    // type ChainId = masternodes::chain_id;
 
     fn id(&self) -> i32 {
         self.id
     }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        masternodes::dsl::masternodes
+        todo!()
+        //         masternodes::dsl::masternodes
     }
 }
 
@@ -116,9 +199,9 @@ impl MasternodeEntity {
         known_confirmed_at_height: i32,
         update_height: i32,
         local_masternode_id: Option<i32>,
-        prev_operator_bls_public_keys: BDictionary<'static, UInt256, OperatorPublicKey>,
-        prev_masternode_entry_hashes: BDictionary<'static, UInt256, UInt256>,
-        prev_validity: BDictionary<'static, UInt256, Boolean>,
+        prev_operator_bls_public_keys: Vec<OperatorPublicKeyAtBlockHash>,
+        prev_masternode_entry_hashes: Vec<MasternodeEntryHashAtBlockHash>,
+        prev_validity: Vec<ValidityAtBlockHash>,
         confirmed_hash: UInt256,
         ipv6_address: UInt128,
         key_id_voting: UInt160,
@@ -141,8 +224,6 @@ impl MasternodeEntity {
             known_confirmed_at_height,
             update_height,
             local_masternode_id,
-            address_ids: vec![],
-            governance_vote_ids: vec![],
             prev_operator_bls_public_keys,
             prev_masternode_entry_hashes,
             prev_validity,
@@ -152,7 +233,6 @@ impl MasternodeEntity {
             operator_bls_public_key,
             provider_registration_transaction_hash,
             masternode_entry_hash,
-            masternode_list_ids: vec![]
         };
         Self::create(&records, context)
     }
@@ -239,22 +319,18 @@ impl MasternodeEntity {
         // block data ???
         // let block_height = block_height_lookup(self.)
 
-
-        let previous_operator_public_keys = self.prev_operator_bls_public_keys.map
-            .iter()
-            .map(|(&hash, &value)|(BlockData { height: block_height_lookup(hash), hash }, value))
-            .collect();
-
-        let previous_entry_hashes = self.prev_masternode_entry_hashes.map
-            .iter()
-            .map(|(&hash, &value)|(BlockData { height: block_height_lookup(hash), hash }, value))
-            .collect();
-        let previous_validity = self.prev_validity.map
-            .iter()
-            .map(|(&hash, &value)|(BlockData { height: block_height_lookup(hash), hash }, value.0))
-            .collect();
-
-
+        let previous_operator_public_keys = self.prev_operator_bls_public_keys.iter().fold(BTreeMap::new(), |mut acc, key| {
+            acc.insert(BlockData { height: block_height_lookup(key.block_hash), hash: key.block_hash }, key.key);
+            acc
+        });
+        let previous_entry_hashes = self.prev_masternode_entry_hashes.iter().fold(BTreeMap::new(), |mut acc, key| {
+            acc.insert(BlockData { height: block_height_lookup(key.block_hash), hash: key.block_hash }, key.entry_hash);
+            acc
+        });
+        let previous_validity = self.prev_validity.iter().fold(BTreeMap::new(), |mut acc, key| {
+            acc.insert(BlockData { height: block_height_lookup(key.block_hash), hash: key.block_hash }, key.validity.0);
+            acc
+        });
 
         MasternodeEntry {
             provider_registration_transaction_hash: self.provider_registration_transaction_hash,

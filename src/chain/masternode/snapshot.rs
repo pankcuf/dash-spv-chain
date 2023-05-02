@@ -5,7 +5,7 @@ use crate::chain::common::LLMQSnapshotSkipMode;
 use crate::consensus::encode::VarInt;
 use crate::crypto::byte_util::BytesDecodable;
 use crate::impl_bytes_decodable;
-use crate::models::MasternodeEntry;
+use crate::chain::masternode::MasternodeEntry;
 
 #[derive(Clone)]
 pub struct LLMQSnapshot {

@@ -1,4 +1,4 @@
-use crate::models::{LLMQEntry, LLMQSnapshot, MNListDiff};
+use crate::chain::masternode::{LLMQEntry, LLMQSnapshot, MNListDiff};
 
 #[derive(Debug)]
 pub struct LLMQRotationInfo {

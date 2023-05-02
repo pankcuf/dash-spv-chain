@@ -1,5 +1,5 @@
 use chrono::NaiveDateTime;
-use diesel::{QueryResult, QuerySource, Table};
+use diesel::{ExpressionMethods, QueryResult, QuerySource, Table};
 use diesel::query_builder::QueryFragment;
 use diesel::sqlite::Sqlite;
 use crate::crypto::UInt256;
@@ -8,6 +8,7 @@ use crate::storage::manager::managed_context::ManagedContext;
 use crate::storage::models::entity::Entity;
 
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[diesel(table_name = checkpoints)]
 pub struct CheckpointEntity {
     pub id: i32,
     pub height: i32,
@@ -22,7 +23,7 @@ pub struct CheckpointEntity {
 }
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="checkpoints"]
+#[diesel(table_name = checkpoints)]
 pub struct NewCheckpointEntity {
     pub height: i32,
     pub hash: UInt256,
@@ -37,9 +38,15 @@ pub struct NewCheckpointEntity {
 
 impl Entity for CheckpointEntity {
     type ID = checkpoints::id;
+    // type ChainId = checkpoints::chain_id;
+
+    fn id(&self) -> i32 {
+        self.id
+    }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        checkpoints::dsl::checkpoints
+        todo!()
+        //        checkpoints::dsl::checkpoints
     }
 }
 

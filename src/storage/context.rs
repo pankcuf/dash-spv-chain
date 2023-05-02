@@ -1,6 +1,8 @@
 use std::collections::HashMap;
-use crate::{ManagedContextType, ManagedContext, get_connection_pool};
+use crate::storage::manager::managed_context::ManagedContext;
+use crate::storage::manager::managed_context_type::ManagedContextType;
 
+#[derive(Debug, Default)]
 pub struct StoreContext {
     store: HashMap<ManagedContextType, ManagedContext>
 }
@@ -9,11 +11,11 @@ impl StoreContext {
     pub fn new() -> Self {
         Self {
             store: HashMap::from([
-                (ManagedContextType::View, ManagedContext { pool: get_connection_pool() }),
-                (ManagedContextType::Chain, ManagedContext { pool: get_connection_pool() }),
-                (ManagedContextType::Peer, ManagedContext { pool: get_connection_pool() }),
-                (ManagedContextType::Masternodes, ManagedContext { pool: get_connection_pool() }),
-                (ManagedContextType::Platform, ManagedContext { pool: get_connection_pool() }),
+                (ManagedContextType::View, ManagedContext::default()),
+                (ManagedContextType::Chain, ManagedContext::default()),
+                (ManagedContextType::Peer, ManagedContext::default()),
+                (ManagedContextType::Masternodes, ManagedContext::default()),
+                (ManagedContextType::Platform, ManagedContext::default()),
             ])
         }
     }

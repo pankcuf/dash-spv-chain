@@ -1,4 +1,4 @@
-use crate::types::{BlockOperatorPublicKey, MasternodeEntryHash, OperatorPublicKey, Validity};
+use crate::ffi::types::{BlockOperatorPublicKey, MasternodeEntryHash, OperatorPublicKey, Validity};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]

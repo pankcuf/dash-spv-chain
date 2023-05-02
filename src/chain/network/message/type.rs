@@ -1,8 +1,9 @@
-use std::io::Read;
 use byte::ctx::{Endian, NULL, Str};
 use byte::{BytesExt, TryRead};
 
+#[derive(Debug, Default, PartialEq)]
 pub enum Type {
+    #[default]
     WrongType,
     Version,
     Verack,

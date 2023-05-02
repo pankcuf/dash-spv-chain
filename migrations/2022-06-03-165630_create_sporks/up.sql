@@ -7,5 +7,6 @@ CREATE TABLE sporks
     time_signed BIG INT NOT NULL,
     value BIG INT NOT NULL,
     spork_hash BLOB NOT NULL,
-    signature BLOB NOT NULL
+    signature BLOB NOT NULL,
+    marked_for_retrieval SMALLINT
 )

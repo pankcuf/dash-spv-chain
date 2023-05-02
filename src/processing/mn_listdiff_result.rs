@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
-use crate::{boxed, boxed_vec, models, ToFFI, types, UInt256};
-use crate::chain::common;
-use crate::ffi::to::{encode_masternodes_map, encode_quorums_map};
+use crate::chain::{common, masternode};
+use crate::crypto::UInt256;
+use crate::ffi::boxer::{boxed, boxed_vec};
+use crate::ffi::to::{encode_masternodes_map, encode_quorums_map, ToFFI};
+use crate::ffi::types;
 use crate::processing::ProcessingError;
 
 pub struct MNListDiffResult {
@@ -13,10 +15,10 @@ pub struct MNListDiffResult {
     pub has_valid_mn_list_root: bool,   //1 byte
     pub has_valid_llmq_list_root: bool, //1 byte
     pub has_valid_quorums: bool,        //1 byte
-    pub masternode_list: models::MasternodeList,
-    pub added_masternodes: BTreeMap<UInt256, models::MasternodeEntry>,
-    pub modified_masternodes: BTreeMap<UInt256, models::MasternodeEntry>,
-    pub added_quorums: BTreeMap<common::LLMQType, BTreeMap<UInt256, models::LLMQEntry>>,
+    pub masternode_list: masternode::MasternodeList,
+    pub added_masternodes: BTreeMap<UInt256, masternode::MasternodeEntry>,
+    pub modified_masternodes: BTreeMap<UInt256, masternode::MasternodeEntry>,
+    pub added_quorums: BTreeMap<common::LLMQType, BTreeMap<UInt256, masternode::LLMQEntry>>,
     pub needed_masternode_lists: Vec<UInt256>,
 }
 

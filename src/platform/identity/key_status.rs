@@ -1,23 +1,12 @@
-use crate::platform::base::serializable_object::SerializableValue;
 
+#[derive(Debug, Default)]
 pub enum KeyStatus {
+    #[default]
     Unknown = 0,
     Registered = 1,
     Registering = 2,
     NotRegistered = 3,
     Revoked = 4,
-}
-
-impl Default for KeyStatus {
-    fn default() -> Self {
-        KeyStatus::Unknown
-    }
-}
-
-impl SerializableValue for KeyStatus {
-    fn as_data(&self) -> &[u8] {
-        todo!()
-    }
 }
 
 impl From<i16> for KeyStatus {

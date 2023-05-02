@@ -1,14 +1,10 @@
-use diesel::{BoolExpressionMethods, QueryDsl, QueryResult, QuerySource, RunQueryDsl, Table};
-use diesel::associations::HasTable;
-use diesel::query_builder::{IntoUpdateTarget, QueryFragment, QueryId};
+use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl, QueryResult, QuerySource, RunQueryDsl, Table};
+use diesel::query_builder::QueryFragment;
 use diesel::query_dsl::filter_dsl::FilterDsl;
 use diesel::sqlite::Sqlite;
 use crate::crypto::Boolean;
 use crate::schema::addresses;
-use crate::schema::chains;
 use crate::schema::derivation_paths;
-// use crate::schema::chains::dsl::chains;
-// use crate::schema::derivation_paths::dsl::derivation_paths;
 use crate::storage::manager::managed_context::ManagedContext;
 use crate::storage::models::chain::chain::ChainEntity;
 use crate::storage::models::common::derivation_path::DerivationPathEntity;
@@ -26,7 +22,7 @@ use crate::storage::models::entity::Entity;
 
 // todo: shall we sandbox it with chain_id?
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
-#[table_name="addresses"]
+#[diesel(table_name = addresses)]
 pub struct AddressEntity {
     pub id: i32,
     pub identity_index: i32,
@@ -43,8 +39,8 @@ pub struct AddressEntity {
     // pub used_in_special_transaction_ids: Vec<i32>,
 }
 
-#[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="addresses"]
+#[derive(Insertable, PartialEq, Eq, Debug, Default)]
+#[diesel(table_name = addresses)]
 pub struct NewAddressEntity {
     pub identity_index: i32,
     pub index: i32,
@@ -61,14 +57,15 @@ pub struct NewAddressEntity {
 
 impl Entity for AddressEntity {
     type ID = addresses::id;
-    type ChainId = None;
+    // type ChainId = ();
 
     fn id(&self) -> i32 {
         self.id
     }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        addresses::dsl::addresses
+        todo!()
+        //         addresses::dsl::addresses
     }
 }
 
@@ -120,5 +117,15 @@ impl AddressEntity {
         //assert_eq!(aggregates.len(), 1, "addresses should not be duplicates");
         Self::_get_id_and_account_id_by_address_and_chain_id(address, chain_id, context)
             .first::<(i32, i32, i32)>(&context.connection())
+    }
+
+
+    pub fn count_relationships(&self, context: &ManagedContext) -> QueryResult<usize> {
+        // if ([e.usedInInputs count] ||
+        //     [e.usedInOutputs count] ||
+        //     [e.usedInSpecialTransactions count] ||
+        //     [e.usedInSimplifiedMasternodeEntries count]) {
+        // TODO:
+        Err(diesel::result::Error::NotFound)
     }
 }

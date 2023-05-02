@@ -1,5 +1,3 @@
-use crate::platform::base::serializable_object::SerializableValue;
-
 #[derive(Debug)]
 pub enum UsernameStatus {
     NotPresent = 0,
@@ -69,9 +67,3 @@ impl From<UsernameStatus> for i16 {
     }
 }
 
-impl SerializableValue for UsernameStatus {
-    fn as_data(&self) -> &[u8] {
-        let self_u32: u32 = self.into();
-        &*self_u32.to_le_bytes()
-    }
-}

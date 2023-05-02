@@ -4,3 +4,6 @@ pub mod historic_chain_status;
 pub mod block_info;
 pub mod transaction_info;
 pub mod identity;
+pub mod masternode_list_info;
+pub mod transition_info;
+pub mod contract_info;

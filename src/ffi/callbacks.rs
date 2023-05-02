@@ -1,8 +1,10 @@
 extern crate libc;
 use std::ffi::c_void;
+use crate::chain::masternode;
 use crate::ffi::from::FromFFI;
-use crate::{models, types, UInt256};
 use crate::crypto::byte_util::MutDecodable;
+use crate::crypto::UInt256;
+use crate::ffi::types;
 
 pub type AddInsightBlockingLookup =
     unsafe extern "C" fn(block_hash: *mut [u8; 32], context: *const c_void);
@@ -20,7 +22,7 @@ pub type ValidateLLMQCallback =
 pub type GetBlockHeightByHash =
     unsafe extern "C" fn(block_hash: *mut [u8; 32], context: *const c_void) -> u32;
 pub type MerkleRootLookup =
-    unsafe extern "C" fn(block_hash: *mut [u8; 32], context: *const c_void) -> *mut u8; // UIn256
+    unsafe extern "C" fn(block_hash: *mut [u8; 32], context: *const c_void) -> *mut u8; // UInt256
 pub type MasternodeListLookup = unsafe extern "C" fn(
     block_hash: *mut [u8; 32],
     context: *const c_void,
@@ -33,7 +35,7 @@ pub type MasternodeListSave = unsafe extern "C" fn(
 ) -> bool;
 
 pub type GetBlockHashByHeight =
-    unsafe extern "C" fn(block_height: u32, context: *const c_void) -> *mut u8; // UIn256
+    unsafe extern "C" fn(block_height: u32, context: *const c_void) -> *mut u8; // UInt256
 pub type GetLLMQSnapshotByBlockHash = unsafe extern "C" fn(
     block_hash: *mut [u8; 32],
     context: *const c_void,
@@ -51,7 +53,7 @@ pub fn lookup_masternode_list<MNL, MND>(
     block_hash: UInt256,
     masternode_list_lookup: MNL,
     masternode_list_destroy: MND,
-) -> Option<models::MasternodeList>
+) -> Option<masternode::MasternodeList>
 where
     MNL: Fn(UInt256) -> *mut types::MasternodeList + Copy,
     MND: Fn(*mut types::MasternodeList),
@@ -109,7 +111,7 @@ pub fn lookup_snapshot_by_block_hash<SL, SD>(
     block_hash: UInt256,
     snapshot_lookup: SL,
     snapshot_destroy: SD,
-) -> Option<models::LLMQSnapshot>
+) -> Option<masternode::LLMQSnapshot>
 where
     SL: Fn(UInt256) -> *mut types::LLMQSnapshot + Copy,
     SD: Fn(*mut types::LLMQSnapshot),

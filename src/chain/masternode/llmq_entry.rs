@@ -3,17 +3,16 @@ use byte::{BytesExt, TryRead, LE};
 use hashes::hex::ToHex;
 use std::convert::Into;
 use std::hash::Hasher;
-use crate::chain::chain::Chain;
-use crate::chain::common::llmq_version::LLMQVersion;
-use crate::chain::common::LLMQType;
+use crate::chain::common::{LLMQType, LLMQVersion};
 use crate::consensus::encode::VarInt;
 use crate::consensus::{Encodable, WriteExt};
-use crate::crypto::data_ops::Data;
+use crate::util::data_ops::Data;
 use crate::crypto::{UInt256, UInt384, UInt768};
-use crate::crypto::byte_util::AsBytes;
+use crate::crypto::byte_util::{AsBytes, BytesDecodable};
 use crate::hashes::{sha256d, Hash};
+use crate::impl_bytes_decodable;
 
-#[derive(Clone, Ord, PartialOrd, PartialEq, Eq)]
+#[derive(Clone, Default, Ord, PartialOrd, Eq)]
 pub struct LLMQEntry {
     pub version: LLMQVersion,
     pub llmq_hash: UInt256,
@@ -32,8 +31,10 @@ pub struct LLMQEntry {
     pub saved: bool,
     pub commitment_hash: Option<UInt256>,
 
-    chain: &'static Chain,
+    // chain: &'static Chain,
 }
+
+impl_bytes_decodable!(LLMQEntry);
 
 impl std::fmt::Debug for LLMQEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -340,11 +341,11 @@ impl LLMQEntry {
         self.valid_members_count = entry.valid_members_count;
         self.verified = entry.verified;
         self.version = entry.version;
-        self.chain = entry.chain;
+        // self.chain = entry.chain;
     }
 
     pub fn use_legacy_bls_scheme(&self) -> bool {
-        self.version >= 4
+        self.version >= 4.into()
     }
 
 }

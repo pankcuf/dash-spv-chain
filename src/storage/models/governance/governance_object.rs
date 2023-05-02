@@ -13,6 +13,7 @@ use crate::storage::models::entity::Entity;
 /// indexation:
 /// "timestamp" DESC
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[diesel(table_name = governance_objects)]
 pub struct GovernanceObjectEntity {
     pub id: i32,
     pub amount: i64,
@@ -40,7 +41,7 @@ pub struct GovernanceObjectEntity {
 }
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="governance_objects"]
+#[diesel(table_name = governance_objects)]
 pub struct NewGovernanceObjectEntity {
     pub amount: i64,
     pub start_epoch: i64,
@@ -67,9 +68,15 @@ pub struct NewGovernanceObjectEntity {
 }
 
 impl Entity for GovernanceObjectEntity {
-    type Type = governance_objects::dsl::governance_objects;
+    type ID = governance_objects::id;
+    // type ChainId = governance_objects::chain_id;
+
+    fn id(&self) -> i32 {
+        self.id
+    }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        governance_objects::dsl::governance_objects
+        todo!()
+        //        governance_objects::dsl::governance_objects
     }
 }

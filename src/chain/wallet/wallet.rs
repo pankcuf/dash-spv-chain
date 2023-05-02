@@ -1,47 +1,33 @@
+use std::borrow::Borrow;
 use std::cmp::max;
 use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 use byte::BytesExt;
-use hashes::{Hash, sha256, sha256d};
-use ring::{hmac, rand};
 use crate::chain::chain::Chain;
-use crate::chain::options::sync_type::SyncType;
+use crate::chain::ext::derivation::Derivation;
 use crate::chain::tx::transaction::ITransaction;
+use crate::chain::options::sync_type::SyncType;
 use crate::chain::wallet::account::Account;
-use crate::chain::wallet::bip39_mnemonic::{BIP39_CREATION_TIME, BIP39_WALLET_UNKNOWN_CREATION_TIME, BIP39Mnemonic};
-use crate::chain::wallet::special_transaction_wallet_holder::SpecialTransactionWalletHolder;
-use crate::consensus::Encodable;
-use crate::crypto::byte_util::{Reversable, Zeroable};
-use crate::crypto::primitives::utxo::UTXO;
-use crate::crypto::{UInt160, UInt256};
-use crate::{derivation, Environment};
-use crate::chain::common::chain_type::IHaveChainSettings;
-use crate::chain::tx::credit_funding_transaction::CreditFundingTransaction;
-use crate::chain::wallet::bip39_language::Bip39Language;
 use crate::chain::wallet::extension::identities::WalletIdentities;
 use crate::chain::wallet::extension::invitations::WalletInvitations;
 use crate::chain::wallet::extension::seed::{Seed, SeedRequestBlock};
-use crate::crypto::data_ops::short_hex_string_from;
+use crate::chain::wallet::special_transaction_wallet_holder::SpecialTransactionWalletHolder;
+use crate::consensus::Encodable;
+use crate::crypto::UInt256;
+use crate::crypto::UTXO;
 use crate::derivation::authentication_keys_derivation_path::AuthenticationKeysDerivationPath;
 use crate::derivation::credit_funding_derivation_path::CreditFundingDerivationPath;
-use crate::derivation::derivation_path;
 use crate::derivation::derivation_path::IDerivationPath;
 use crate::derivation::incoming_funds_derivation_path::IncomingFundsDerivationPath;
 use crate::derivation::masternode_holdings_derivation_path::MasternodeHoldingsDerivationPath;
-use crate::derivation::simple_indexed_derivation_path::ISimpleIndexedDerivationPath;
 use crate::environment::Environment;
 use crate::keychain::keychain::Keychain;
-use crate::keys::ecdsa_key::ECDSAKey;
 use crate::keys::key::IKey;
 use crate::manager::authentication_manager::AuthenticationError;
-use crate::platform::contract::contract::Contract;
 use crate::platform::identity::identity::Identity;
 use crate::platform::identity::invitation::Invitation;
 use crate::storage::manager::managed_context::ManagedContext;
 use crate::storage::models::account::identity::IdentityEntity;
-use crate::storage::models::entity::EntityConvertible;
-use crate::storage::models::tx::special::credit_funding_transaction::CreditFundingTransactionEntity;
-use crate::storage::models::tx::transaction::TransactionEntity;
 use crate::util::time::TimeUtil;
 
 
@@ -62,6 +48,13 @@ pub const WALLET_MASTERNODE_OPERATORS_KEY: &str = "WALLET_MASTERNODE_OPERATORS_K
 pub const VERIFIED_WALLET_CREATION_TIME_KEY: &str = "VERIFIED_WALLET_CREATION_TIME";
 pub const REFERENCE_DATE_2001: u64 = 978307200;
 
+// pub const BIP39_CREATION_TIME: u64 = 1425492298;
+pub const BIP39_CREATION_TIME: u32 = 1425492298;
+//1546810296.0 <- that would be block 1M
+pub const BIP39_WALLET_UNKNOWN_CREATION_TIME: u64 = 0;
+
+
+#[derive(Debug, Default, Eq, PartialEq)]
 pub struct Wallet {
     pub chain: &'static Chain,
     pub accounts: HashMap<u32, Account>,
@@ -74,7 +67,7 @@ pub struct Wallet {
     pub checked_guessed_wallet_creation_time: bool,
     pub checked_verify_wallet_creation_time: bool,
 
-    pub special_transactions_holder: SpecialTransactionsWalletHolder,
+    pub special_transactions_holder: SpecialTransactionWalletHolder,
 
     // @property (nonatomic, copy) NSString *uniqueIDString;
 
@@ -86,28 +79,32 @@ pub struct Wallet {
     pub masternode_voter_key_locations: HashMap<UInt256, String>,
 
     pub is_transient: bool,
-    pub(crate) identities: HashMap<UInt256, Identity>,
+    pub(crate) identities: HashMap<UInt256, &'static Identity>,
     pub(crate) identities_loaded: bool,
-    pub(crate) invitations: HashMap<UTXO, Invitation>,
+    pub(crate) invitations: HashMap<UTXO, &'static Invitation>,
     pub(crate) invitations_loaded: bool,
 
     pub(crate) seed_request_block: Option<SeedRequestBlock>,
     pub(crate) default_identity: Option<&'static Identity>,
+}
 
+impl<'a> Default for &'a Wallet {
+    fn default() -> Self {
+        &Wallet::default()
+    }
 }
 
 /// Invitations
 impl Wallet {
+    pub fn unique_id_string(&self) -> &String {
+        &self.unique_id_string
+    }
     pub fn unique_id_as_str(&self) -> &str {
         self.unique_id_string.as_str()
     }
 
     pub(crate) fn contains_blockchain_invitation(&self, invitation: &Invitation) -> bool {
-        if let Some(outpoint) = invitation.identity.locked_outpoint {
-            self.invitations.get(&outpoint).is_some()
-        } else {
-            false
-        }
+        invitation.identity.locked_outpoint.map_or(false, |k| self.invitations.get(k).is_some())
     }
 }
 
@@ -138,7 +135,7 @@ impl Wallet {
         wallet.unique_id_string = unique_id;
         wallet.seed_request_block = Some(|authprompt, amount, seed_completion| {
             // this happens when we request the seed
-            s.seed_with_prompt(authprompt, amount, seed_completion);
+            async { wallet.seed_with_prompt(authprompt, amount, seed_completion) };
         });
 
         if store_seed_phrase {
@@ -158,8 +155,8 @@ impl Wallet {
 
         wallet.identities.clear();
         wallet.invitations.clear();
-        wallet.blockchain_identities();
-        wallet.blockchain_invitations();
+        wallet.identities();
+        wallet.invitations();
         // blockchain users are loaded
         // add blockchain user derivation paths to account
         wallet
@@ -175,15 +172,15 @@ impl Wallet {
         format!("{}_{}", WALLET_ACCOUNTS_KNOWN_KEY, wallet_unique_id)
     }
 
-    pub fn wallet_blockchain_identities_key(&self) -> String {
+    pub fn wallet_identities_key(&self) -> String {
         format!("{}_{}", WALLET_BLOCKCHAIN_USERS_KEY, self.unique_id_string)
     }
 
-    pub fn wallet_blockchain_identities_default_index_key(&self) -> String {
+    pub fn wallet_identities_default_index_key(&self) -> String {
         format!("{}_{}_DEFAULT_INDEX", WALLET_BLOCKCHAIN_USERS_KEY, self.unique_id_string)
     }
 
-    pub fn wallet_blockchain_invitations_key(&self) -> String {
+    pub fn wallet_invitations_key(&self) -> String {
         format!("{}_{}", WALLET_BLOCKCHAIN_INVITATIONS_KEY, self.unique_id_string)
     }
 
@@ -208,8 +205,8 @@ impl Wallet {
     }
 
     fn register_specialized_derivation_paths_for_seed_phrase(seed_phrase: &String, wallet_unique_id: &String, chain: &Chain) {
-        if let Some(seed_phrase) = BIP39Mnemonic::normalize_phrase(seed_phrase) {
-            let derived_key_data = BIP39Mnemonic::derive_key_from_phrase(&seed_phrase, None);
+        if let Ok(seed_phrase) = bip39::Mnemonic::parse_normalized(seed_phrase) {
+            let derived_key_data = seed_phrase.to_seed_normalized("").to_vec();
             let mut provider_owner_keys_path = AuthenticationKeysDerivationPath::provider_owner_keys_derivation_path_for_chain(chain);
             provider_owner_keys_path.generate_extended_public_key_from_seed(&derived_key_data, Some(wallet_unique_id));
             let mut provider_operator_keys_path = AuthenticationKeysDerivationPath::provider_operator_keys_derivation_path_for_chain(chain);
@@ -234,51 +231,51 @@ impl Wallet {
     }
 
     pub fn load_blockchain_identities(&self) {
-        // [self.chain.chainManagedObjectContext performBlockAndWait:^{
-        self.identities.values().for_each(|identity| {
-            match IdentityEntity::aggregate_friendship(&identity.unique_id, context) {
-                Ok((incoming, outgoing)) => {
-                    incoming.iter().for_each(|request| {
-                        if let Some(mut account) = self.account_with_number(request.account_index as u32) {
-                            let mut funds_derivation_path = IncomingFundsDerivationPath::contact_based_derivation_path_with_destination_identity_unique_id(request.destination_identity_unique_id, request.source_identity_unique_id, account.account_number, self.chain);
-                            funds_derivation_path.base.standalone_extended_public_key_unique_id = Some(request.derivation_path.public_key_identifier.clone());
-                            funds_derivation_path.base.wallet = Some(self);
-                            funds_derivation_path.base.account = Some(account);
-                            account.add_incoming_derivation_path(&mut funds_derivation_path, request.friendship_identifier, self.chain.chain_context());
-                        }
-                    });
-                    outgoing.iter().for_each(|request| {
-                        if let Some(mut account) = self.account_with_number(request.account_index as u32) {
-                            if let Some(mut funds_derivation_path) = account.derivation_path_for_friendship_with_identifier(&request.friendship_identifier) {
-                                // both contacts are on device
-                                account.add_outgoing_derivation_path(&mut funds_derivation_path, request.friendship_identifier, self.chain.chain_context());
-                            } else {
-                                let derivation_path_entity = &request.derivation_path;
-                                let mut funds_derivation_path = IncomingFundsDerivationPath::external_derivation_path_with_extended_public_key_unique_id(
-                                    &derivation_path_entity.public_key_identifier,
-                                    request.destination_identity_unique_id,
-                                    request.source_identity_unique_id,
-                                    self.chain
-                                );
+        self.chain.chain_context().perform_block_and_wait(|context| {
+            self.identities.values().for_each(|identity| {
+                match IdentityEntity::aggregate_friendship(&identity.unique_id, context) {
+                    Ok((incoming, outgoing)) => {
+                        incoming.iter().for_each(|request| {
+                            if let Some(mut account) = self.account_with_number(request.account_index as u32) {
+                                let mut funds_derivation_path = IncomingFundsDerivationPath::contact_based_derivation_path_with_destination_identity_unique_id(request.destination_identity_unique_id, request.source_identity_unique_id, account.account_number, self.chain);
+                                funds_derivation_path.base.standalone_extended_public_key_unique_id = Some(request.derivation_path.public_key_identifier.clone());
                                 funds_derivation_path.base.wallet = Some(self);
                                 funds_derivation_path.base.account = Some(account);
-                                account.add_outgoing_derivation_path(&mut funds_derivation_path, request.friendship_identifier, self.chain.chain_context());
+                                account.add_incoming_derivation_path(&mut funds_derivation_path, request.friendship_identifier, self.chain.chain_context());
                             }
-                        }
-                    });
+                        });
+                        outgoing.iter().for_each(|request| {
+                            if let Some(mut account) = self.account_with_number(request.account_index as u32) {
+                                if let Some(mut funds_derivation_path) = account.derivation_path_for_friendship_with_identifier(&request.friendship_identifier) {
+                                    // both contacts are on device
+                                    account.add_outgoing_derivation_path(&mut funds_derivation_path, request.friendship_identifier, self.chain.chain_context());
+                                } else {
+                                    let derivation_path_entity = &request.derivation_path;
+                                    let mut funds_derivation_path = IncomingFundsDerivationPath::external_derivation_path_with_extended_public_key_unique_id(
+                                        &derivation_path_entity.public_key_identifier,
+                                        request.destination_identity_unique_id,
+                                        request.source_identity_unique_id,
+                                        self.chain
+                                    );
+                                    funds_derivation_path.base.wallet = Some(self);
+                                    funds_derivation_path.base.account = Some(account);
+                                    account.add_outgoing_derivation_path(&mut funds_derivation_path, request.friendship_identifier, self.chain.chain_context());
+                                }
+                            }
+                        });
 
-                },
-                Err(err) => println!("Error aggregation friendship: {:?}", err)
-            }
-        });
-        // this adds the extra information to the transaction and must come after loading all blockchain identities.
-        self.accounts.values().for_each(|account| {
-            account.all_transactions.iter().for_each(|transaction| {
-                transaction.load_blockchain_identities_from_derivation_paths(&account.fund_derivation_paths);
-                transaction.load_blockchain_identities_from_derivation_paths(&account.outgoing_fund_derivation_paths);
+                    },
+                    Err(err) => println!("Error aggregation friendship: {:?}", err)
+                }
+            });
+            // this adds the extra information to the transaction and must come after loading all blockchain identities.
+            self.accounts.values().for_each(|account| {
+                account.all_transactions.iter().for_each(|mut transaction| {
+                    transaction.load_blockchain_identities_from_derivation_paths(&account.fund_derivation_paths);
+                    transaction.load_blockchain_identities_from_derivation_paths(account.outgoing_fund_derivation_paths());
+                });
             });
         });
-        // }];
     }
 
     pub fn last_account_number(&self) -> u32 {
@@ -303,24 +300,27 @@ impl Wallet {
         }
     }
     pub fn add_another_account_if_authenticated(&mut self) -> Option<&Account> {
-        let add_account_number = self.last_account_number() + 1;
-        let derivation_paths = self.chain.standard_derivation_paths_for_account_number(add_account_number);
-        let mut add_account = Account::init_with(add_account_number, derivation_paths, self.chain.chain_context());
-        if let Some(seed_phrase) = self.seed_phrase_if_authenticated() {
-            let derived_key_data = BIP39Mnemonic::derive_key_from_phrase(&seed_phrase, None);
-            add_account.fund_derivation_paths.iter().for_each(|mut derivation_path| {
-                derivation_path.generate_extended_public_key_from_seed(&derived_key_data, Some(&self.unique_id_string));
-            });
-            if self.chain.is_evolution_enabled() {
-                if let Some(mut master_path) = &add_account.master_contacts_derivation_path {
-                    master_path.generate_extended_public_key_from_seed(&derived_key_data, Some(&self.unique_id_string));
-                }
-            }
-            self.add_account(add_account);
-            add_account.load_derivation_paths();
-            Some(&add_account)
-        }
-        None
+        self.seed_phrase_if_authenticated()
+            .and_then(|seed_phrase| bip39::Mnemonic::parse_normalized(seed_phrase.borrow())
+                .ok()
+                .map(|mnemonic| {
+                    let add_account_number = self.last_account_number() + 1;
+                    let mut derivation_paths = self.chain.standard_derivation_paths_for_account_number(add_account_number);
+                    let mut add_account = Account::account_with_account_number(add_account_number, derivation_paths, self.chain.chain_context());
+                    let derived_key_data = mnemonic.to_seed_normalized(seed_phrase.as_str()).to_vec();
+                    // let derived_key_data = BIP39Mnemonic::derive_key_from_phrase(&seed_phrase, None);
+                    add_account.fund_derivation_paths.iter().for_each(|mut derivation_path| {
+                        derivation_path.generate_extended_public_key_from_seed(&derived_key_data, Some(&self.unique_id_string));
+                    });
+                    if self.chain.is_evolution_enabled() {
+                        if let Some(mut master_path) = &add_account.master_contacts_derivation_path {
+                            master_path.generate_extended_public_key_from_seed(&derived_key_data, Some(&self.unique_id_string));
+                        }
+                    }
+                    self.add_account(add_account);
+                    add_account.load_derivation_paths();
+                    &add_account
+                }))
     }
 
     pub fn add_accounts(&mut self, accounts: Vec<Account>) {
@@ -335,20 +335,14 @@ impl Wallet {
         if self.chain == chain {
             return Ok(self);
         }
-        let prompt = format!("Please authenticate to create your {:?} wallet", chain.params.chain_type);
+        let prompt = format!("Please authenticate to create your {:?} wallet", chain.r#type());
         self.seed_phrase_after_authentication_with_prompt(Some(prompt))
-            .and_then(|seed_phrase| {
-                if let Some(wallet) = Self::standard_wallet_with_seed_phrase(
-                    seed_phrase,
-                    if self.wallet_creation_time.unwrap() == BIP39_CREATION_TIME { 0 } else { self.wallet_creation_time.unwrap() },
-                    chain,
-                    true,
-                    false) {
-                    Ok(&wallet)
-                } else {
-                    Err(AuthenticationError::CannotCreateWallet)
-                }
-            })
+            .map_or(Err(AuthenticationError::CannotCreateWallet), Self::standard_wallet_with_seed_phrase(
+                seed_phrase,
+                if self.wallet_creation_time.unwrap() == BIP39_CREATION_TIME { 0 } else { self.wallet_creation_time.unwrap() },
+                chain,
+                true,
+                false))
     }
 
     /// Unique Identifiers
@@ -538,7 +532,7 @@ impl Wallet {
             } else {
                 // this is a new zone
                 offset = 0;
-                last_known_block_zone = currentData;
+                last_known_block_zone = current_data;
                 block_zones.push(last_known_block_zone);
             }
         });
@@ -582,7 +576,7 @@ impl Wallet {
             if current_continuation_data != 0 {
                 current_continuation_data.to_be_bytes().enc(&mut fingerprint_data);
             }
-            fingerprintData
+            fingerprint_data
         } else {
             vec![]
         }
@@ -616,15 +610,17 @@ impl Wallet {
             .sum()
     }
 
-    pub fn register_addresses_with_gap_limit(&self, gap_limit: u32, unused_account_gap_limit: u32, dashpay_gap_limit: u32, internal: bool) -> Vec<dyn IDerivationPath> {
+    pub fn register_addresses_with_gap_limit(&self, gap_limit: u32, unused_account_gap_limit: u32, dashpay_gap_limit: u32, internal: bool) -> Vec<&dyn IDerivationPath> {
         self.accounts.values().fold(Vec::new(), |mut arr, account| {
-            match account.register_addresses_with_gap_limit(gap_limit, unused_account_gap_limit, dashpay_gap_limit, internal) {
-                Ok(data) => {
-                    arr.extend(data);
-                    arr
-                },
-                Err(err) => {}
-            }
+            arr.extend(account.register_addresses_with_gap_limit(gap_limit, unused_account_gap_limit, dashpay_gap_limit, internal));
+            arr
+            // match account.register_addresses_with_gap_limit(gap_limit, unused_account_gap_limit, dashpay_gap_limit, internal) {
+            //     Ok(data) => {
+            //         arr.extend(data);
+            //         arr
+            //     },
+            //     Err(err) => {}
+            // }
         })
     }
 
@@ -657,28 +653,23 @@ impl Wallet {
         })
     }
 
-    pub fn all_transactions(&self) -> HashSet<dyn ITransaction> {
+    pub fn all_transactions(&self) -> HashSet<&dyn ITransaction> {
         self.accounts.values().fold(HashSet::new(), |mut arr, account| {
             arr.extend(account.all_transactions.clone());
             arr
         })
     }
 
-    pub fn all_transactions_for_account(&self, account: &Account) -> HashSet<dyn ITransaction> {
+    pub fn all_transactions_for_account(&self, account: &Account) -> HashSet<&dyn ITransaction> {
         let mut set = HashSet::new();
         set.extend(account.all_transactions.clone());
         set.extend(self.special_transactions_holder.all_transactions().clone());
         set
     }
 
-    pub fn transaction_for_hash(&self, tx_hash: &UInt256) -> Option<dyn ITransaction> {
-        if let Some(tx) = self.accounts.values().filter_map(|account| account.transaction_for_hash(tx_hash)) {
-            Some(tx)
-        } else if let Some(tx) = self.special_transactions_holder.transaction_for_hash(tx_hash) {
-            Some(tx)
-        } else {
-            None
-        }
+    pub fn transaction_for_hash(&self, tx_hash: &UInt256) -> Option<&dyn ITransaction> {
+        self.accounts.values().find_map(|account| account.transaction_for_hash(tx_hash))
+            .or(self.special_transactions_holder.transaction_for_hash(tx_hash))
     }
 
     pub fn unspent_outputs(&self) -> HashSet<UTXO> {
@@ -689,12 +680,12 @@ impl Wallet {
     }
 
     /// true if the address is controlled by the wallet, this can also be for paths that are not accounts (todo)
-    pub fn contains_address(&self, address: Option<String>) -> bool {
+    pub fn contains_address(&self, address: &String) -> bool {
         self.accounts.values().filter(|account| account.contains_address(address)).count() > 0
     }
 
     /// true if the address is controlled by the wallet, this can also be for paths that are not accounts (todo)
-    pub fn accounts_base_derivation_paths_contain_address(&self, address: Option<String>) -> bool {
+    pub fn accounts_base_derivation_paths_contain_address(&self, address: &String) -> bool {
         self.accounts.values().filter(|account| account.base_derivation_paths_contain_address(address)).count() > 0
     }
 
@@ -705,31 +696,31 @@ impl Wallet {
             .find(|&acc| acc.balance > 0)
     }
 
-    pub fn account_for_address(&self, address: Option<String>) -> Option<&Account> {
-        self.accounts.values().find(|account| account.contains_address(address))
+    pub fn account_for_address(&self, address: &String) -> Option<&Account> {
+        self.accounts.values().find(|acc| acc.contains_address(address))
     }
 
-    pub fn account_for_dashpay_external_derivation_path_address(&self, address: Option<String>) -> Option<&Account> {
-        self.accounts.values().find(|account| account.external_derivation_path_containing_address(address).is_some())
+    pub fn account_for_dashpay_external_derivation_path_address(&self, address: &String) -> Option<&Account> {
+        self.accounts.values().find(|acc| acc.external_derivation_path_containing_address(address).is_some())
     }
 
     /// true if the address was previously used as an input or output in any wallet transaction
-    pub fn address_is_used(&self, address: Option<String>) -> bool {
-        self.accounts.values().find(|account| account.address_is_used(address)).is_some()
+    pub fn address_is_used(&self, address: &String) -> bool {
+        self.accounts.values().find(|acc| acc.address_is_used(address)).is_some()
     }
 
-    pub fn transaction_address_already_seen_in_outputs(&self, address: Option<String>) -> bool {
-        self.accounts.values().find(|account| account.transaction_address_already_seen_in_outputs(address)).is_some()
+    pub fn transaction_address_already_seen_in_outputs(&self, address: &String) -> bool {
+        self.accounts.values().find(|acc| acc.transaction_address_already_seen_in_outputs(address)).is_some()
     }
 
     /// returns the amount received by the wallet from the transaction (total outputs to change and/or receive addresses)
     pub fn amount_received_from_transaction(&self, transaction: &dyn ITransaction) -> u64 {
-        self.accounts.values().map(|account| account.amount_received_from_transaction(transaction)).sum()
+        self.accounts.values().map(|acc| acc.amount_received_from_transaction(transaction)).sum()
     }
 
     /// retuns the amount sent from the wallet by the trasaction (total wallet outputs consumed, change and fee included)
     pub fn amount_sent_by_transaction(&self, transaction: &dyn ITransaction) -> u64 {
-        self.accounts.values().map(|account| account.amount_sent_by_transaction(transaction)).sum()
+        self.accounts.values().map(|acc| acc.amount_sent_by_transaction(transaction)).sum()
     }
 
     // set the block heights and timestamps for the given transactions, use a height of TX_UNCONFIRMED and timestamp of 0 to
@@ -746,7 +737,7 @@ impl Wallet {
                 self.chain_updated_block_height(height);
             }
         });
-        self.special_transactions_holder.set_block_height(height, timestamp, transaction_hashes);
+        self.special_transactions_holder.set_block_height(height, timestamp as f64, transaction_hashes);
         updated
     }
 
@@ -780,11 +771,11 @@ impl Wallet {
         self.accounts.values().filter(|account| !account.transaction_is_valid(transaction)).count() > 0
     }
 
-    pub fn private_key_for_address(&self, address: Option<String>, seed: &Vec<u8>) -> Option<&dyn IKey> {
+    pub fn private_key_for_address(&self, address: &String, seed: &Vec<u8>) -> Option<&dyn IKey> {
         self.account_for_address(address)
-            .and_then(|account| account.derivation_path_containing_address(address.clone())
-                .and_then(|path| path.index_path_for_known_address(address.clone())
-                    .and_then(|index_path| derivation_path.private_key_at_index_path(&index_path, seed))))
+            .and_then(|account| account.derivation_path_containing_address(address)
+                .and_then(|path| path.index_path_for_known_address(address)
+                    .and_then(|index_path| path.private_key_at_index_path_from_seed(&index_path, seed))))
     }
 
     pub fn reload_derivation_paths(&self) {
@@ -792,13 +783,13 @@ impl Wallet {
         self.specialized_derivation_paths().iter_mut().for_each(|mut path| path.reload_addresses());
     }
 
-    pub fn specialized_derivation_paths(&self) -> Vec<dyn IDerivationPath> {
-        self.chain.derivation_path_factory.loaded_specialized_derivation_paths_for_wallet(self)
+    pub fn specialized_derivation_paths(&self) -> Vec<&dyn IDerivationPath> {
+        self.chain.factory().loaded_specialized_derivation_paths_for_wallet(self)
     }
 
     pub fn has_an_extended_public_key_missing(&self) -> bool {
         //todo add non funds derivation paths
-        self.accounts.values().find(|account| account.has_an_extended_public_key_missing).is_some()
+        self.accounts.values().find(|account| account.has_an_extended_public_key_missing()).is_some()
     }
 
 
@@ -827,7 +818,7 @@ impl Wallet {
 
     pub fn wipe_blockchain_identities_in_context(&mut self, context: &ManagedContext) {
         self.identities.values().for_each(|identity| {
-            self.unregister_blockchain_identity(identity);
+            self.unregister_identity(identity);
             identity.delete_persistent_object_and_save(false, context);
         });
         self.default_identity = None;
@@ -838,5 +829,14 @@ impl Wallet {
 
     pub fn last_sync_block_height(&mut self) -> u32 {
         self.chain.last_sync_block_height()
+    }
+}
+
+impl Wallet {
+    pub fn identity_ecdsa_keys_derivation_path_for_wallet(&self) -> &AuthenticationKeysDerivationPath {
+        self.chain.identity_ecdsa_keys_derivation_path_for_wallet(self)
+    }
+    pub fn identity_bls_keys_derivation_path_for_wallet(&self) -> &AuthenticationKeysDerivationPath {
+        self.chain.identity_bls_keys_derivation_path_for_wallet(self)
     }
 }

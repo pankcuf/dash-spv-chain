@@ -1,8 +1,5 @@
-use std::ops::DerefMut;
-use diesel::{BoolExpressionMethods, ExpressionMethods, QueryResult, QuerySource, RunQueryDsl, Table};
-use diesel::dsl::count;
+use diesel::{BoolExpressionMethods, ExpressionMethods, QueryResult, QuerySource, Table};
 use diesel::query_builder::QueryFragment;
-use diesel::query_dsl::methods::SelectDsl;
 use diesel::sqlite::Sqlite;
 use crate::schema::identity_key_paths;
 use crate::storage::manager::managed_context::ManagedContext;
@@ -11,6 +8,7 @@ use crate::storage::models::entity::Entity;
 /// queries:
 /// "blockchainIdentity == %@ && derivationPath == %@ && path == %@"
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[diesel(table_name = identity_key_paths)]
 pub struct IdentityKeyPathEntity {
     pub id: i32,
     pub key_id: i32,
@@ -24,7 +22,7 @@ pub struct IdentityKeyPathEntity {
 }
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="identity_key_paths"]
+#[diesel(table_name = identity_key_paths)]
 pub struct NewIdentityKeyPathEntity {
     pub key_id: i32,
     pub key_status: i16,
@@ -37,10 +35,15 @@ pub struct NewIdentityKeyPathEntity {
 
 impl Entity for IdentityKeyPathEntity {
     type ID = identity_key_paths::id;
-    type ChainId = None;
+    // type ChainId = ();
+
+    fn id(&self) -> i32 {
+        self.id
+    }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        identity_key_paths::dsl::identity_key_paths
+        todo!()
+        //         identity_key_paths::dsl::identity_key_paths
     }
 }
 
@@ -73,7 +76,7 @@ impl IdentityKeyPathEntity {
         Self::any(predicate, context)
     }
 
-    pub fn update_key_status(&self, key_status: i32, context: &ManagedContext) -> QueryResult<usize> {
-        Self::update(ID.eq(self.id), (identity_key_paths::key_status.eq(key_status)), context)
+    pub fn update_key_status(&self, key_status: i16, context: &ManagedContext) -> QueryResult<usize> {
+        Self::update(identity_key_paths::id.eq(self.id), identity_key_paths::key_status.eq(key_status), context)
     }
 }

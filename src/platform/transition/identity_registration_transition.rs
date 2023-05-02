@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use bitcoin_hashes::{Hash, sha256d};
 use crate::crypto::byte_util::AsBytes;
 use crate::crypto::UInt256;
 use crate::chain::chain::Chain;
@@ -12,18 +11,18 @@ use crate::platform::transition::transition::{ITransition, Transition};
 
 pub struct IdentityRegistrationTransition {
     pub base: Transition,
-    public_keys: HashMap<u32, dyn IKey>,
+    public_keys: HashMap<u32, &'static dyn IKey>,
     credit_funding_transaction: &'static CreditFundingTransaction,
 }
 
 impl IdentityRegistrationTransition {
-    pub fn new(version: u16, public_keys: HashMap<u32, dyn IKey>, credit_funding_transaction: &CreditFundingTransaction, chain: &Chain) -> Self {
+    pub fn new(version: u16, public_keys: HashMap<u32, &dyn IKey>, credit_funding_transaction: &CreditFundingTransaction, chain: &Chain) -> Self {
         assert!(!public_keys.is_empty(), "There must be at least one key when registering a user");
         Self {
             base: Transition {
                 base: BaseObject { chain, ..Default::default() },
                 version,
-                identity_unique_id: UInt256::sha256d(credit_funding_transaction.locked_outpoint.as_bytes()),
+                identity_unique_id: UInt256::sha256d(credit_funding_transaction.locked_outpoint().as_bytes()),
                 r#type: Type::IdentityRegistration,
                 ..Default::default()
             },

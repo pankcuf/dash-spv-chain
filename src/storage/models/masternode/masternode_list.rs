@@ -1,14 +1,13 @@
 use std::collections::BTreeMap;
-use std::ops::DerefMut;
 use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl, QueryResult, QuerySource, RunQueryDsl, Table};
 use diesel::query_builder::QueryFragment;
 use diesel::sqlite::Sqlite;
 use crate::chain::common::LLMQType;
 use crate::crypto::UInt256;
-use crate::models;
-use crate::models::{LLMQEntry, MasternodeEntry, MasternodeList};
+use crate::chain::masternode;
+use crate::chain::masternode::{LLMQEntry, MasternodeEntry, MasternodeList};
 use crate::schema;
-use crate::storage::models::masternode::{MasternodeEntity, QuorumEntity};
+use crate::storage::models::masternode::QuorumEntity;
 use crate::schema::masternode_lists;
 use crate::schema::masternode_list_masternodes;
 use crate::schema::masternode_list_quorums;
@@ -17,34 +16,41 @@ use crate::storage::models::entity::Entity;
 // "block.height < %@ && block.blockHash IN %@ && (block.usedByQuorums.@count == 0)";
 
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[diesel(table_name = masternode_lists)]
 pub struct MasternodeListEntity {
     pub id: i32,
     pub masternodes_merkle_root: UInt256,
-    pub quorums_merkle_root: UInt256,
+    pub quorums_merkle_root: Option<UInt256>,
 
     pub block_id: i32,
     pub chain_id: i32,
-    pub masternode_ids: Vec<i32>,
-    pub quorum_ids: Vec<i32>,
+    // pub masternode_ids: Vec<i32>,
+    // pub quorum_ids: Vec<i32>,
 }
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="masternode_lists"]
+#[diesel(table_name = masternode_lists)]
 pub struct NewMasternodeListEntity {
     pub masternodes_merkle_root: UInt256,
-    pub quorums_merkle_root: UInt256,
+    pub quorums_merkle_root: Option<UInt256>,
 
     pub block_id: i32,
     pub chain_id: i32,
-    pub masternode_ids: Vec<i32>,
-    pub quorum_ids: Vec<i32>,
+    // pub masternode_ids: Vec<i32>,
+    // pub quorum_ids: Vec<i32>,
 }
 
 impl Entity for MasternodeListEntity {
-    type Type = masternode_lists::dsl::masternode_lists;
+    type ID = masternode_lists::id;
+    // type ChainId = masternode_lists::chain_id;
+
+    fn id(&self) -> i32 {
+        self.id
+    }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        masternode_lists::dsl::masternode_lists
+        todo!()
+        //        masternode_lists::dsl::masternode_lists
     }
 }
 
@@ -53,12 +59,12 @@ impl MasternodeListEntity {
     pub fn create_masternode_list(block_id: i32,
                                   chain_id: i32,
                                   masternodes_merkle_root: UInt256,
-                                  quorums_merkle_root: UInt256,
+                                  quorums_merkle_root: Option<UInt256>,
                                   context: &ManagedContext
 
     ) -> QueryResult<usize> {
         let target = masternode_lists::dsl::masternode_lists;
-        let records = NewMasternodeListEntity { block_id, chain_id, masternode_ids: vec![], masternodes_merkle_root, quorums_merkle_root, quorum_ids: vec![] };
+        let records = NewMasternodeListEntity { block_id, chain_id, masternodes_merkle_root, quorums_merkle_root };
         Self::create(&records, context)
     }
 
@@ -121,7 +127,7 @@ impl MasternodeListEntity {
         quorums: BTreeMap<LLMQType, BTreeMap<UInt256, LLMQEntry>>,
         context: &ManagedContext,
         block_height_lookup: BHL
-    ) -> models::MasternodeList
+    ) -> masternode::MasternodeList
         where BHL: Fn(UInt256) -> u32 + Copy
     {
         let mut masternode_entries: BTreeMap<UInt256, MasternodeEntry> = BTreeMap::new();
@@ -147,7 +153,7 @@ impl MasternodeListEntity {
         if let Ok(ids) = masternode_list_quorums::dsl::masternode_list_quorums
             .select(masternode_list_quorums::quorum_id)
             .filter(masternode_list_quorums::dsl::masternode_list_id.eq(self.id))
-            .get_results::<i32>(pooled_conn.deref_mut()) {
+            .get_results::<i32>(&context.connection()) {
             ids.iter().for_each(|&i| {
                 if let Ok(result) =  schema::quorums::dsl::quorums
                     .select(schema::quorums::dsl::quorums::all_columns())
@@ -176,7 +182,7 @@ impl MasternodeListEntity {
             block_hash: Default::default(),
             known_height: u32::MAX,
             masternode_merkle_root: Some(self.masternodes_merkle_root),
-            llmq_merkle_root: Some(self.quorums_merkle_root),
+            llmq_merkle_root: self.quorums_merkle_root,
             masternodes: masternode_entries,
             quorums: quorum_entries
         }

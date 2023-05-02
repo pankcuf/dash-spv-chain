@@ -1,3 +1,4 @@
+#[derive(Debug, Default)]
 pub struct UserDefaults {
 
 }
@@ -7,6 +8,9 @@ impl UserDefaults {
         todo!()
     }
     pub fn integer_for_key(key: &str) -> Option<i32> {
+        todo!()
+    }
+    pub fn double_for_key(key: &str) -> Option<u64> {
         todo!()
     }
     pub fn object_for_key<V>(key: &str) -> Option<V> {

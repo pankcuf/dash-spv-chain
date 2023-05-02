@@ -1,31 +1,32 @@
+use bip39::Language;
 use hashes::{Hash, sha256};
-use ring::{hmac, rand};
 use crate::chain::chain::Chain;
 use crate::chain::common::chain_type::IHaveChainSettings;
 use crate::chain::wallet::account::Account;
-use crate::chain::wallet::bip39_language::Bip39Language;
-use crate::chain::wallet::bip39_mnemonic::BIP39Mnemonic;
 use crate::chain::wallet::wallet::Wallet;
 use crate::consensus::Encodable;
-use crate::crypto::data_ops::short_hex_string_from;
+use crate::crypto::UInt512;
+use crate::util::data_ops::short_hex_string_from;
 use crate::derivation::derivation_path::IDerivationPath;
 use crate::keychain::keychain::Keychain;
 use crate::keys::ecdsa_key::ECDSAKey;
+use crate::keys::key::IKey;
 use crate::manager::authentication_manager::AuthenticationError;
+use crate::util;
 
-pub const SEED_ENTROPY_LENGTH: u32 = 128 / 8;
+pub const SEED_ENTROPY_LENGTH: usize = 128 / 8;
 
 pub type SeedCompletionBlock = fn(seed: Option<Vec<u8>>, cancelled: bool);
-pub type SeedRequestBlock = fn(authprompt: Option<String>, amount: u64, seed_completion: Option<SeedCompletionBlock>);
+pub type SeedRequestBlock = fn(authprompt: Option<String>, amount: u64, seed_completion: SeedCompletionBlock);
 
 pub trait Seed {
-    fn generate_random_seed_phrase_for_language(language: Bip39Language) -> String;
-    fn generate_random_seed_phrase() -> String;
-    fn seed_phrase_after_authentication(&self) -> Resultg<String, AuthenticationError>;
+    fn generate_random_seed_phrase_for_language(language: Language) -> Option<bip39::Mnemonic>;
+    fn generate_random_seed_phrase() -> Option<bip39::Mnemonic>;
+    fn seed_phrase_after_authentication(&self) -> Result<String, AuthenticationError>;
     fn has_seed_phrase(&self) -> bool;
     fn set_transient_derived_key_data(derived_key_data: &Vec<u8>, accounts: &Vec<Account>, chain: &Chain) -> String;
     fn set_seed_phrase(seed_phrase: String, created_at: u64, accounts: Vec<Account>, store_on_keychain: bool, chain: &Chain) -> Option<String>;
-    fn seed_with_prompt(&self, authprompt: Option<String>, amount: u64, completion: SeedCompletionBlock);
+    fn seed_with_prompt(&self, authprompt: Option<String>, amount: u64) -> Result<(Option<Vec<u8>>, bool), util::Error>;
     fn seed_phrase_if_authenticated(&self) -> Option<String>;
     fn seed_phrase_after_authentication_with_prompt(&self, authprompt: Option<String>) -> Result<String, AuthenticationError>;
 }
@@ -34,26 +35,16 @@ impl Seed for Wallet {
     /// Seed
 
     // generates a random seed, saves to keychain and returns the associated seed_phrase
-    fn generate_random_seed_phrase_for_language(language: Bip39Language) -> String {
-        //NSMutableData *entropy = [NSMutableData secureDataWithLength:SEED_ENTROPY_LENGTH];
-        //if (SecRandomCopyBytes(kSecRandomDefault, entropy.length, entropy.mutableBytes) != 0) return nil;
-        // todo: SecureAllocator
-        let entropy = Vec::<u8>::with_capacity(SEED_ENTROPY_LENGTH as usize);
-        if language != Bip39Language::Default {
-            // BIP39Mnemonic
-            // [[DSBIP39Mnemonic sharedInstance] setDefaultLanguage:language];
-        }
-        let phrase = BIP39Mnemonic::encode_phrase(entropy);
-        // NSString *phrase = [[DSBIP39Mnemonic sharedInstance] encodePhrase:entropy];
-        phrase
+    fn generate_random_seed_phrase_for_language(language: Language) -> Option<bip39::Mnemonic> {
+        bip39::Mnemonic::generate_in(language, SEED_ENTROPY_LENGTH).ok()
     }
 
 
-    fn generate_random_seed_phrase() -> String {
-        Self::generate_random_seed_phrase_for_language(Bip39Language::Default)
+    fn generate_random_seed_phrase() -> Option<bip39::Mnemonic> {
+        Self::generate_random_seed_phrase_for_language(Language::English)
     }
 
-    fn seed_phrase_after_authentication(&self) -> Resultg<String, AuthenticationError> {//, void (^)(NSString *_Nullable))completion {
+    fn seed_phrase_after_authentication(&self) -> Result<String, AuthenticationError> {//, void (^)(NSString *_Nullable))completion {
         self.seed_phrase_after_authentication_with_prompt(None)
     }
 
@@ -62,17 +53,12 @@ impl Seed for Wallet {
     }
 
     fn set_transient_derived_key_data(derived_key_data: &Vec<u8>, accounts: &Vec<Account>, chain: &Chain) -> String {
-        todo!("check this HMAC implementation");
-        // UInt512 I;
-        // HMAC(&I, SHA512, sizeof(UInt512), BIP32_SEED_KEY, strlen(BIP32_SEED_KEY), derivedKeyData.bytes, derivedKeyData.length);
-        // NSData *publicKey = [DSECDSAKey keyWithSecret:*(UInt256 *)&I compressed:YES].publicKeyData;
-        let rng = rand::SystemRandom::new();
-        let key = hmac::Key::generate(hmac::HMAC_SHA512, &rng)?;
-        let tag = hmac::sign(&key, derived_key_data);
-        let public_key = ECDSAKey::key_with_secret(&tag.as_ref().to_vec(), true)?.public_key_data();
+        let i = UInt512::bip32_seed_key(derived_key_data);
         let mut unique_id_data = Vec::<u8>::new();
-        chain.params.chain_type.genesis_hash().enc(&mut unique_id_data);
-        public_key.enc(&mut unique_id_data);
+        chain.r#type().genesis_hash().enc(&mut unique_id_data);
+        if let Some(mut public_key) = ECDSAKey::key_with_secret(&i.0[..32].to_vec(), true) {
+            public_key.public_key_data().enc(&mut unique_id_data);
+        }
         let unique_id = short_hex_string_from(&sha256::Hash::hash(unique_id_data.as_slice()).into_inner());
         accounts.iter().for_each(|account| {
             account.fund_derivation_paths.iter().for_each(|mut derivation_path| {
@@ -88,17 +74,14 @@ impl Seed for Wallet {
 
 
     fn set_seed_phrase(seed_phrase: String, created_at: u64, accounts: Vec<Account>, store_on_keychain: bool, chain: &Chain) -> Option<String> {
-        todo!("check this HMAC implementation");
-        if let Some(seed_phrase) = BIP39Mnemonic::normalize_phrase(&seed_phrase) {
-            // we store the wallet creation time on the keychain because keychain data persists even when an app is deleted
-            let derived_key_data = BIP39Mnemonic::derive_key_from_phrase(&seed_phrase, None);
-            let rng = rand::SystemRandom::new();
-            let key = hmac::Key::generate(hmac::HMAC_SHA512, &rng)?;
-            let tag = hmac::sign(&key, &derived_key_data);
-            let public_key = ECDSAKey::key_with_secret(&tag.as_ref().to_vec(), true)?.public_key_data();
+        if let Ok(mnemonic) = bip39::Mnemonic::parse_normalized(seed_phrase.as_str()) {
+            let derived_key_data = mnemonic.to_seed_normalized("").to_vec();
+            let seed_key = UInt512::bip32_seed_key(&derived_key_data);
             let mut unique_id_data = Vec::<u8>::new();
-            chain.params.chain_type.genesis_hash().enc(&mut unique_id_data);
-            public_key.enc(&mut unique_id_data);
+            chain.r#type().genesis_hash().enc(&mut unique_id_data);
+            if let Some(mut public_key) = ECDSAKey::key_with_secret(&seed_key.0[..32].to_vec(), true) {
+                public_key.public_key_data().enc(&mut unique_id_data);
+            }
             let unique_id = short_hex_string_from(&sha256::Hash::hash(unique_id_data.as_slice()).into_inner());
             // if not store on keychain then we won't save the extended public keys below.
             let mut store_on_unique_id: Option<&String> = None;
@@ -128,29 +111,28 @@ impl Seed for Wallet {
     }
 
     // authenticates user and returns seed
-    fn seed_with_prompt(&self, authprompt: Option<String>, amount: u64, completion: SeedCompletionBlock) {
+    fn seed_with_prompt(&self, authprompt: Option<String>, amount: u64) -> Result<(Option<Vec<u8>>, bool), util::Error> {
         if authprompt.is_none() && self.chain.authentication_manager.did_authenticate {
             let phrase = Keychain::get_string(self.mnemonic_unique_id()).expect("Can't retrieve mnemonic");
-            let key = BIP39Mnemonic::derive_key_from_phrase(&phrase, None);
-            completion(Some(key), false);
-            return;
+            // return bip39::Mnemonic::parse_normalized(phrase.as_str())
+            //     .map_err(bip39::Error::into)
+            //     .map_or(Ok((None, false)), |mnemonic| Ok(Some(mnemonic.to_seed_normalized("").to_vec()), false)));
+            return if let Ok(mnemonic) = bip39::Mnemonic::parse_normalized(phrase.as_str()) {
+                Ok((Some(mnemonic.to_seed_normalized("").to_vec()), false))
+            } else {
+                Ok((None, false))
+            }
         }
         let using_biometric_authentication = if amount != 0 { self.chain.authentication_manager.can_use_biometric_authentication_for_amount(amount) } else { false };
-        match self.chain.authentication_manager.authenticate_with_prompt(authprompt, using_biometric_authentication, true) {
-            Ok((authenticated, used_biometrics, cancelled)) => {
-                if !authenticated {
-                    completion(None, cancelled);
+        match futures::executor::block_on(self.chain.authentication_manager.authenticate_with_prompt(authprompt, using_biometric_authentication, true)) {
+            Ok((authenticated, used_biometrics, cancelled)) =>
+                if authenticated && (!used_biometrics || self.chain.authentication_manager.update_biometrics_amount_left_after_spending_amount(amount)) {
+                    bip39::Mnemonic::parse_normalized(Keychain::get_string(self.mnemonic_unique_id()).expect("Can't retrieve mnemonic").as_str())
+                        .map_or(Ok((None, cancelled)), |mnemonic| Ok((Some(mnemonic.to_seed_normalized("").to_vec()), cancelled)))
                 } else {
-                    if used_biometrics && !self.chain.authentication_manager.update_biometrics_amount_left_after_spending_amount(amount) {
-                        completion(None, cancelled);
-                    } else {
-                        let phrase = Keychain::get_string(self.mnemonic_unique_id()).expect("Can't retrieve mnemonic");
-                        let key = BIP39Mnemonic::derive_key_from_phrase(&phrase, None);
-                        completion(Some(key), cancelled);
-                    }
-                }
-            },
-            Err(err) => Err(err)
+                    Ok((None, cancelled))
+                },
+            Err(err) => Err(err.into())
         }
     }
 
@@ -164,7 +146,7 @@ impl Seed for Wallet {
 
     /// authenticates user and returns seedPhrase
     fn seed_phrase_after_authentication_with_prompt(&self, authprompt: Option<String>) -> Result<String, AuthenticationError> {
-        match self.chain.authentication_manager.authenticate_with_prompt(authprompt, false, true) {
+        match futures::executor::block_on(self.chain.authentication_manager.authenticate_with_prompt(authprompt, false, true)) {
             Ok((true, used_biometrics, cancelled)) => {
                 match Keychain::get_string(self.mnemonic_unique_id()) {
                     Ok(seed) => Ok(seed),
@@ -173,5 +155,6 @@ impl Seed for Wallet {
             },
             _ => Err(AuthenticationError::NotAuthenticated)
         }
+
     }
 }

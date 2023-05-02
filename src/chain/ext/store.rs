@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use crate::crypto::UInt256;
 use crate::chain::block::IBlock;
 use crate::chain::chain::{Chain, KEEP_RECENT_TERMINAL_BLOCKS};
-use crate::chain::wallet::bip39_mnemonic::BIP39_CREATION_TIME;
+use crate::chain::wallet::wallet::BIP39_CREATION_TIME;
 use crate::storage::manager::managed_context::ManagedContext;
 use crate::storage::models::chain::block::BlockEntity;
 use crate::storage::models::chain::chain::{ChainAggregate, ChainEntity};
@@ -13,7 +13,7 @@ pub trait Store {
     fn save(&self);
     fn save_in_context(&self, context: &ManagedContext);
     fn save_block_locators(&mut self);
-    fn save_terminal_blocks(&self);
+    fn save_terminal_blocks(&mut self);
 
     /// this is used to save transactions atomically with the block, needs to be called before switching threads to save the block
     fn prepare_for_incoming_transaction_persistence_for_block_save_with_number(&self, block_number: u32);
@@ -24,7 +24,7 @@ pub trait Store {
 impl Store for Chain {
 
     fn chain_entity_in_context(&self, context: &ManagedContext) -> ChainAggregate {
-        ChainEntity::aggregate_for_type(self.params.chain_type, &self.checkpoints, context).unwrap()
+        ChainEntity::aggregate_for_type(self.r#type(), &self.checkpoints, context).unwrap()
     }
 
     fn save(&self) {
@@ -39,9 +39,9 @@ impl Store for Chain {
             return;
         }
         match ChainEntity::update_block_hash_and_governance(
-            self.params.chain_type,
+            self.r#type(),
             &self.masternode_base_block_hash,
-            self.total_governance_object_count,
+            self.total_governance_objects_count as i32,
             context) {
             Ok(count) => println!("chain saved {}", count),
             Err(err) => println!("chain saved error: {:?}", err),
@@ -62,7 +62,7 @@ impl Store for Chain {
                     Ok(saved) => println!("TransactionEntity::update_height_and_timestamps ok: {}", saved),
                     Err(err) => println!("TransactionEntity::update_height_and_timestamps error: {:?}", err)
                 }
-                match ChainEntity::save_block_locators(self.params.chain_type, last_block, sync_locators, self.chain_context()) {
+                match ChainEntity::save_block_locators(self.r#type(), last_block, sync_locators, self.chain_context()) {
                     Ok(saved) => println!("ChainEntity::save_block_locators ok: {}", saved),
                     Err(err) => println!("ChainEntity::save_block_locators error: {:?}", err)
                 }
@@ -77,7 +77,7 @@ impl Store for Chain {
         if self.is_transient {
             return;
         }
-        let mut blocks = HashMap::<UInt256, dyn IBlock>::new();
+        let mut blocks = HashMap::<UInt256, &dyn IBlock>::new();
         let mut b = self.last_terminal_block();
         let end_height = b.unwrap().height();
         let mut start_height = b.unwrap().height();
@@ -85,7 +85,7 @@ impl Store for Chain {
         while b.is_some() && start_height > self.last_checkpoint().unwrap().height && end_height - start_height < KEEP_RECENT_TERMINAL_BLOCKS {
             blocks.insert(b.unwrap().block_hash(), b.unwrap().clone());
             start_height = b.unwrap().height();
-            b = terminal_blocks.get(&b.unwrap().prev_block());
+            b = terminal_blocks.get(&b.unwrap().prev_block()).copied();
         }
         if start_height == b.unwrap().height() {
             // only save last one then
@@ -94,18 +94,18 @@ impl Store for Chain {
 
         if self.options.keep_headers {
             // only remove orphan chains
-            match BlockEntity::delete_orphan_blocks(self.params.chain_type, start_height, blocks.keys().collect(), self.chain_context()) {
+            match BlockEntity::delete_orphan_blocks(self.r#type(), start_height, blocks.into_keys().collect(), self.chain_context()) {
                 Ok(deleted) => println!("{} recent orphans removed from disk", deleted),
                 Err(err) => println!("failed to remove orphans")
             }
         } else {
-            match BlockEntity::delete_blocks(self.params.chain_type, blocks.keys().collect(), self.chain_context()) {
+            match BlockEntity::delete_blocks(self.r#type(), blocks.into_keys().collect(), self.chain_context()) {
                 Ok(deleted) => println!("{} blocks removed from disk", deleted),
                 Err(err) => println!("failed to remove blocks")
             }
         }
 
-        match BlockEntity::update_blocks(self.params.chain_type, &mut blocks, self.chain_context()) {
+        match BlockEntity::update_blocks(self.r#type(), &mut blocks, self.chain_context()) {
             Ok(updated) => println!("{} blocks updated on disk", updated),
             Err(err) => println!("failed to update blocks")
         }

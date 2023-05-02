@@ -1,7 +1,6 @@
 use chrono::NaiveDateTime;
-use diesel::{BoolExpressionMethods, QueryResult, QuerySource, Table};
-use diesel::associations::HasTable;
-use diesel::query_builder::{IntoUpdateTarget, QueryFragment, QueryId};
+use diesel::{BoolExpressionMethods, ExpressionMethods, QueryResult, QuerySource, Table};
+use diesel::query_builder::QueryFragment;
 use diesel::sqlite::Sqlite;
 use futures::StreamExt;
 use crate::crypto::UInt256;
@@ -12,7 +11,6 @@ use crate::storage::models::account::identity::IdentityEntity;
 use crate::storage::models::account::user::UserEntity;
 use crate::storage::models::common::derivation_path::DerivationPathEntity;
 use crate::storage::models::entity::Entity;
-use crate::util::big_uint::uint256_add_le;
 
 /// queries:
 /// "sourceContact == %@"
@@ -30,6 +28,7 @@ use crate::util::big_uint::uint256_add_le;
 /// indexation:
 /// "destinationContact.associatedBlockchainIdentity.dashpayUsername.stringValue"
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[diesel(table_name = friend_requests)]
 pub struct FriendRequestEntity {
     pub id: i32,
     pub source_key_index: i32,
@@ -43,8 +42,8 @@ pub struct FriendRequestEntity {
     pub destination_contact_id: i32,
 }
 
-#[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="friend_requests"]
+#[derive(Insertable, PartialEq, Eq, Debug, Default)]
+#[diesel(table_name = friend_requests)]
 pub struct NewFriendRequestEntity {
     pub account_id: i32,
     pub source_key_index: i32,
@@ -75,14 +74,15 @@ pub struct FriendshipAggregate {
 
 impl Entity for FriendRequestEntity {
     type ID = friend_requests::id;
-    type ChainId = None;
+    // type ChainId = ();
 
     fn id(&self) -> i32 {
         self.id
     }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        friend_requests::dsl::friend_requests
+        todo!()
+        //        friend_requests::dsl::friend_requests
     }
 }
 
@@ -108,9 +108,9 @@ impl FriendRequestEntity {
     pub fn aggregate_internals(&self, context: &ManagedContext) -> QueryResult<(i32, DerivationPathEntity, UInt256)> {
         self.get_derivation_path(context)
             .and_then(|derivation_path| self.get_account(context)
-                .and_then(|account| self.get_destination_user(context)
+                .and_then(|AccountEntity { index, .. }| self.get_destination_user(context)
                     .and_then(|destination_user| destination_user.get_identity(context)
-                        .and_then(|destination_identity| Ok((account.index, derivation_path, destination_identity.unique_id))))))
+                        .map(|IdentityEntity { unique_id, .. }| (index, derivation_path, unique_id)))))
     }
 
     pub fn outgoing_requests_for_user_with_id(user_id: i32, context: &ManagedContext) -> QueryResult<Vec<Self>> {
@@ -121,7 +121,7 @@ impl FriendRequestEntity {
         Self::read(friend_requests::destination_contact_id.eq(user_id), context)
     }
 
-    pub fn between_users_with_identity_ids(source_unique_id: &UInt256, destination_unique_id: &UInt256) -> QueryResult<Self> {
+    pub fn between_users_with_identity_ids(source_unique_id: &UInt256, destination_unique_id: &UInt256, context: &ManagedContext) -> QueryResult<Self> {
         match (UserEntity::get_by_identity_unique_id(destination_unique_id, context),
                UserEntity::get_by_identity_unique_id(source_unique_id, context)) {
             (Ok(destination_user), Ok(source_user)) =>
@@ -142,13 +142,14 @@ impl FriendRequestEntity {
     }
 
     pub fn friendship_identifier_with_source_identifier(source_identifier: &UInt256, destination_identifier: &UInt256, account_index: u32) -> UInt256 {
-        let mut friendship = UInt256(source_identifier.0.iter().zip(destination_identifier.0).map(|(x, y)| x ^ y).collect());
+        // let mut friendship = UInt256(source_identifier.0.iter().zip(destination_identifier.0).map(|(x, y)| x ^ y).collect());
+        let mut friendship = source_identifier.xor(destination_identifier);
         // todo: check validity of operations
-        if source_identifier > destination_identifier {
+        if source_identifier.sup(destination_identifier) {
             // the destination should always be bigger than the source, otherwise add 1 on the 32nd bit to differenciate them
-            friendship = uint256_add_le(friendship, UInt256::from_u32(1 << 31));
+            friendship = friendship.add_le(UInt256::from((1 << 31) as u64));
         }
-        UInt256(friendship.0.iter().zip(UInt256::from_u32(account_index).0).map(|(x, y)| x ^ y).collect())
+        friendship.xor(&UInt256::from(account_index))
     }
 
 

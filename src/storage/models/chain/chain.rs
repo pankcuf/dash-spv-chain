@@ -1,16 +1,16 @@
 use chrono::NaiveDateTime;
-use diesel::{BoolExpressionMethods, EqAll, ExpressionMethods, QueryResult, QuerySource, Table};
+use diesel::{BoolExpressionMethods, ExpressionMethods, QueryResult, QuerySource, Table};
 use diesel::query_builder::QueryFragment;
 use diesel::sqlite::Sqlite;
 use futures::StreamExt;
-use crate::chain::block::{Block, IBlock};
+use crate::chain::block::IBlock;
 use crate::chain::chain::Chain;
 use crate::chain::chain_lock::ChainLock;
 use crate::chain::checkpoint::Checkpoint;
 use crate::chain::common::ChainType;
 use crate::consensus::Encodable;
 use crate::crypto::UInt256;
-use crate::schema::{chains, peers};
+use crate::schema::chains;
 use crate::storage::manager::managed_context::ManagedContext;
 use crate::storage::models::account::friend_request::FriendRequestEntity;
 use crate::storage::models::account::identity::IdentityEntity;
@@ -18,16 +18,15 @@ use crate::storage::models::account::user::UserEntity;
 use crate::storage::models::chain::block::BlockEntity;
 use crate::storage::models::chain::chain_lock::ChainLockEntity;
 use crate::storage::models::chain::checkpoint::CheckpointEntity;
-use crate::storage::models::chain::spork::SporkEntity;
 use crate::storage::models::common::address::AddressEntity;
 use crate::storage::models::common::derivation_path::DerivationPathEntity;
-use crate::storage::models::common::peer::PeerEntity;
 use crate::storage::models::entity::Entity;
 use crate::storage::models::masternode::{LocalMasternodeEntity, MasternodeEntity, MasternodeListEntity, QuorumEntity};
 use crate::storage::models::masternode::llmq_snapshot::LLMQSnapshotEntity;
 use crate::storage::models::tx::transaction::TransactionEntity;
 
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[diesel(table_name = chains)]
 pub struct ChainEntity {
     pub id: i32,
     pub chain_type: i16,
@@ -61,7 +60,7 @@ pub struct ChainEntity {
 }
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="chains"]
+#[diesel(table_name = chains)]
 pub struct NewChainEntity {
     pub chain_type: i16,
     pub version: Option<i16>,
@@ -85,14 +84,15 @@ pub struct ChainAggregate {
 
 impl Entity for ChainEntity {
     type ID = chains::id;
-    type ChainId = chains::id;
+    // type ChainId = chains::id;
 
     fn id(&self) -> i32 {
         self.id
     }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        chains::dsl::chains
+        todo!()
+        //         chains::dsl::chains
     }
 }
 
@@ -150,7 +150,7 @@ impl ChainEntity {
                 }
                 // todo: ensure our checkpoints are match with entities
                 Ok(ChainAggregate {
-                    chain: entity,
+                    chain: objects.first().unwrap(),
                     checkpoints: &CheckpointEntity::checkpoints_by_chain_id(objects.first().unwrap().id, context)
                         .unwrap_or(vec![]) })
             },
@@ -207,13 +207,14 @@ impl ChainEntity {
 
     pub fn wipe_masternode_data(r#type: ChainType, context: &ManagedContext) -> QueryResult<usize> {
         Self::get_chain(r#type, context)
-            .and_then(|entity| {
+            .map(|entity| {
                 let chain_id = entity.id;
-                LocalMasternodeEntity::delete_by_chain_id(chain_id, context).expect("Can't delete local masternode entities for chain")
-                MasternodeEntity::delete_by_chain_id(chain_id, context).expect("Can't delete masternode entities for chain")
-                QuorumEntity::delete_by_chain_id(chain_id, context).expect("Can't delete quorum entities for chain")
-                MasternodeListEntity::delete_by_chain_id(chain_id, context).expect("Can't delete masternode list entities for chain")
-                LLMQSnapshotEntity::delete_by_chain_id(chain_id, context).expect("Can't delete llmq snapshot entities for chain")
+                LocalMasternodeEntity::delete_by_chain_id(chain_id, context).expect("Can't delete local masternode entities for chain");
+                MasternodeEntity::delete_by_chain_id(chain_id, context).expect("Can't delete masternode entities for chain");
+                QuorumEntity::delete_by_chain_id(chain_id, context).expect("Can't delete quorum entities for chain");
+                MasternodeListEntity::delete_by_chain_id(chain_id, context).expect("Can't delete masternode list entities for chain");
+                LLMQSnapshotEntity::delete_by_chain_id(chain_id, context).expect("Can't delete llmq snapshot entities for chain");
+                1
             })
     }
 
@@ -277,12 +278,12 @@ impl ChainEntity {
     }
 }
 
-impl ChainEntity {
-
-    pub fn update_peers_with_addresses(&self, addresses: &Vec<i32>, context: &ManagedContext) -> QueryResult<usize> {
-        let predicate = peers::chain_id.eq(self.id)
-            .and(peers::address.eq_any(addresses));
-        PeerEntity::update(predicate, )
+// impl ChainEntity {
+//
+//     pub fn update_peers_with_addresses(&self, addresses: &Vec<i32>, context: &ManagedContext) -> QueryResult<usize> {
+//         let predicate = peers::chain_id.eq(self.id)
+//             .and(peers::address.eq_any(addresses));
+//         PeerEntity::update(predicate, context)
         // ChainEntity::get_chain(chain_type, context)
         //     .and_then(|chain_entity|
         //
@@ -290,7 +291,7 @@ impl ChainEntity {
         //             peers::chain_id.eq(chain_entity.id)
         //                 .and(peers::address.ne_all(keep_addresses)),
         //             context))
-
-    }
-
-}
+    //
+    // }
+//
+// }

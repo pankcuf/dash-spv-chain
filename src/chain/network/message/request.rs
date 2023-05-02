@@ -1,59 +1,57 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 use crate::consensus::Encodable;
 use crate::consensus::encode::VarInt;
 use crate::crypto::{UInt128, UInt256};
 use crate::crypto::byte_util::Zeroable;
-use crate::chain::network::governance_request_state::GovernanceRequestState;
-use crate::chain::network::inv_type::InvType;
 use crate::chain::network::message::inv_type::InvType;
 use crate::chain::network::message::r#type::Type;
 use crate::chain::network::net_address::NetAddress;
 use crate::chain::network::peer::{ENABLED_SERVICES, LOCAL_HOST};
-use crate::crypto::primitives::utxo::UTXO;
+use crate::crypto::UTXO;
 use crate::util::time::TimeUtil;
-ause crate::util::time::TimeUtil;
 
 pub trait IRequest {
-    fn r#type(&self) -> Type;
-    fn to_data(&self) -> Vec<u8>;
+    fn r#type(self) -> Type;
+    fn to_data(self) -> Vec<u8>;
 }
 
-pub enum GovernanceSyncRequest {
-    Objects(Request, GovernanceRequestState),
-    Votes(Request, GovernanceRequestState)
-}
+// #[derive(Debug, Default)]
+// pub enum GovernanceSyncRequest {
+//     Objects(Request),
+//     Votes(Request)
+// }
 
-impl GovernanceSyncRequest {
-    pub fn state(&self) -> GovernanceRequestState {
-        match self {
-            GovernanceSyncRequest::Objects(_, &state) => state,
-            GovernanceSyncRequest::Votes(_, &state) => state,
-            _ => GovernanceRequestState::None
-        }
-    }
+// impl GovernanceSyncRequest {
+    // pub fn state(&self) -> GovernanceRequestState {
+    //     match self {
+    //         GovernanceSyncRequest::Objects(_, state) => state,
+    //         GovernanceSyncRequest::Votes(_, state) => state,
+    //         // _ => panic!("wrong governance sync request")
+    //     }
+    // }
+    //
+    // pub fn request(&self) -> Request {
+    //     match self {
+    //         GovernanceSyncRequest::Objects(request, _) => request,
+    //         GovernanceSyncRequest::Votes(request, _) => request,
+    //         // _ => panic!("wrong governance sync request")
+    //     }
+    // }
+// }
 
-    pub fn request(&self) -> Request {
-        match self {
-            GovernanceSyncRequest::Objects(&request, _) => request,
-            GovernanceSyncRequest::Votes(&request, _) => request,
-            _ => panic!("wrong governance sync request")
-        }
-    }
-}
-
-pub enum GovernanceHashesRequest {
-    Object(Request, GovernanceRequestState),
-    Vote(Request, GovernanceRequestState)
-}
-
-impl GovernanceHashesRequest {
-    pub fn request(&self) -> Request {
-        match self {
-            GovernanceHashesRequest::Objects(&request, _) |
-            GovernanceHashesRequest::Votes(&request, _) => request
-        }
-    }
-}
+// pub enum GovernanceHashesRequest {
+//     Object(Request, GovernanceRequestState),
+//     Vote(Request, GovernanceRequestState)
+// }
+//
+// impl GovernanceHashesRequest {
+//     pub fn request(&self) -> Request {
+//         match self {
+//             GovernanceHashesRequest::Objects(&request, _) |
+//             GovernanceHashesRequest::Votes(&request, _) => request
+//         }
+//     }
+// }
 
 pub enum Request {
     Addr,
@@ -66,6 +64,8 @@ pub enum Request {
     Version(UInt128, u16, u32, u64, u16, u64, String),
     GovernanceHashes(InvType, &'static Vec<UInt256>),
     GovernanceSync(UInt256, Vec<u8>),
+    GovernanceSyncObjects,
+    GovernanceSyncVotes,
     DSeg(UTXO),
     GetMNListDiff(UInt256, UInt256),
     GetQRInfo(Vec<UInt256>, UInt256, bool),
@@ -75,17 +75,18 @@ pub enum Request {
     Default(Type),
 }
 
-fn array_of_hashes_enc(hashes: &Option<&Vec<UInt256>>, inv_type: InvType, s: &mut Vec<u8>) {
-    if let Some(&hashes) = hashes {
+fn array_of_hashes_enc(hashes: Option<&Vec<UInt256>>, inv_type: InvType, s: &mut Vec<u8>) {
+    if let Some(hashes) = hashes {
         hashes.iter().for_each(|hash| {
-            (inv_type.into() as u32).enc(s);
+            let inv: u32 = inv_type.into();
+            inv.enc(s);
             hash.enc(s);
         });
     }
 }
 
 impl IRequest for Request {
-    fn r#type(&self) -> Type {
+    fn r#type(self) -> Type {
         match self {
             Request::Addr => Type::Addr,
             Request::FilterLoad(..) => Type::Filterload,
@@ -107,7 +108,7 @@ impl IRequest for Request {
         }
     }
 
-    fn to_data(&self) -> Vec<u8> {
+    fn to_data(self) -> Vec<u8> {
         let mut buffer: Vec<u8> = Vec::new();
         match self {
             Request::Default(..) => {},
@@ -141,7 +142,7 @@ impl IRequest for Request {
                 services.enc(&mut buffer);
                 address.enc(&mut buffer);
                 port.swap_bytes().enc(&mut buffer);
-                NetAddress::new(LOCAL_HOST, *standard_port, ENABLED_SERVICES).enc(&mut buffer);
+                NetAddress::new(LOCAL_HOST, standard_port, ENABLED_SERVICES).enc(&mut buffer);
                 local_nonce.enc(&mut buffer);
                 useragent.enc(&mut buffer);
                 0u32.enc(&mut buffer); // last block received
@@ -151,10 +152,10 @@ impl IRequest for Request {
                 parent_hash.enc(&mut buffer);
                 filter_data.enc(&mut buffer);
             },
-            Request::Inv(&inv_type, hashes) |
-            Request::GovernanceHashes(&inv_type, &hashes) => {
+            Request::Inv(inv_type, hashes) |
+            Request::GovernanceHashes(inv_type, hashes) => {
                 VarInt(hashes.len() as u64).enc(&mut buffer);
-                array_of_hashes_enc(&Some(hashes), inv_type, &mut buffer);
+                array_of_hashes_enc(Some(hashes), inv_type, &mut buffer);
             },
             Request::DSeg(utxo) => {
                 utxo.hash.enc(&mut buffer);
@@ -184,12 +185,13 @@ impl IRequest for Request {
             },
             Request::GetDataForTransactionHash(tx_hash) => {
                 VarInt(1u64).enc(&mut buffer);
-                (InvType::Tx.into() as u32).enc(&mut buffer);
+                let tx_type: u32 = InvType::Tx.into();
+                tx_type.enc(&mut buffer);
                 tx_hash.enc(&mut buffer);
             },
             Request::GetDataForTransactionHashes(tx_hashes, block_hashes, is_lock_hashes, isd_lock_hashes, c_lock_hashes) => {
                 let tx_hashes_len = tx_hashes.map_or(0, |h| h.len());
-                let block_hashes_len = block_hashes_hashes.map_or(0, |h| h.len());
+                let block_hashes_len = block_hashes.map_or(0, |h| h.len());
                 let is_lock_hashes_len = is_lock_hashes.map_or(0, |h| h.len());
                 let isd_lock_hashes_len = isd_lock_hashes.map_or(0, |h| h.len());
                 let c_lock_hashes_len = c_lock_hashes.map_or(0, |h| h.len());
@@ -202,12 +204,12 @@ impl IRequest for Request {
                 array_of_hashes_enc(c_lock_hashes, InvType::ChainLockSignature, &mut buffer);
             },
             Request::TransactionInv(tx_hashes, tx_lock_request_hashes) => {
-                let tx_hashes_len = tx_hashes.map_or(0, |h| h.len());
-                let tx_lock_request_hashes_len = tx_lock_request_hashes.map_or(0, |h| h.len());
+                let tx_hashes_len = tx_hashes.len();
+                let tx_lock_request_hashes_len = tx_lock_request_hashes.len();
                 let size = tx_hashes_len + tx_lock_request_hashes_len;
                 VarInt(size as u64).enc(&mut buffer);
-                array_of_hashes_enc(&Some(tx_hashes), InvType::Tx, &mut buffer);
-                array_of_hashes_enc(&Some(tx_lock_request_hashes), InvType::TxLockRequest, &mut buffer);
+                array_of_hashes_enc(Some(tx_hashes), InvType::Tx, &mut buffer);
+                array_of_hashes_enc(Some(tx_lock_request_hashes), InvType::TxLockRequest, &mut buffer);
             },
         }
         buffer

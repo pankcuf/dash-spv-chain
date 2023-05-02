@@ -1,37 +1,11 @@
 use std::collections::HashMap;
 use crate::chain::chain::Chain;
-use crate::platform::base::serializable_object::SerializableKey;
 use crate::platform::contract::contract::Contract;
+use crate::platform::contract::ContractType;
 use crate::platform::document;
 use crate::platform::identity::identity::Identity;
 
-pub enum ContractType {
-    DPNSContract,
-    DashPayContract,
-    DashThumbnailContract,
-}
-
-impl SerializableKey for ContractType {
-    fn as_str(&self) -> &str {
-        match self {
-            ContractType::DPNSContract => "DPNS_CONTRACT",
-            ContractType::DashPayContract => "DASHPAY_CONTRACT",
-            ContractType::DashThumbnailContract => "DASHTHUMBNAIL_CONTRACT",
-        }
-    }
-}
-
-impl ContractType {
-    fn name(&self) -> &str {
-        match self {
-            ContractType::DPNSContract => "DPNS",
-            ContractType::DashPayContract => "DashPay",
-            ContractType::DashThumbnailContract => "DashThumbnail",
-            _ => "Unnamed Contract",
-        }
-    }
-}
-
+#[derive(Debug, Default)]
 pub struct Platform {
     pub chain: &'static Chain,
     known_contracts: HashMap<ContractType, &'static Contract>,
@@ -43,18 +17,18 @@ pub struct Platform {
 
 impl Platform {
     pub fn new(chain: &Chain) -> Self {
-        let dash_pay_contract = Contract::localDashpayContractForChain(chain);
-        let dpns_contract = Contract::localDPNSContractForChain(chain);
-        let dash_thumbnail_contract = Contract::localDashThumbnailContractForChain(chain);
+        let dash_pay_contract = Contract::local_dashpay_contract_for_chain(chain);
+        let dpns_contract = Contract::local_dpns_contract_for_chain(chain);
+        let dash_thumbnail_contract = Contract::local_dash_thumbnail_contract_for_chain(chain);
         Self {
             chain,
             dash_pay_contract,
             dpns_contract,
             dash_thumbnail_contract,
             known_contracts: HashMap::from([
-                (ContractType::DashPayContract, &dash_pay_contract),
-                (ContractType::DPNSContract, &dpns_contract),
-                (ContractType::DashThumbnailContract, &dash_thumbnail_contract),
+                (ContractType::DashPay, &dash_pay_contract),
+                (ContractType::DPNS, &dpns_contract),
+                (ContractType::DashThumbnail, &dash_thumbnail_contract),
             ])
         }
     }
@@ -64,12 +38,12 @@ impl Platform {
     }
 
     pub fn name_for_contract_with_identifier(identifier: &String) -> String {
-        if identifier.starts_with(DASHPAY_CONTRACT) {
-            "DashPay"
-        } else if identifier.starts_with(DPNS_CONTRACT) {
-            "DPNS"
-        } else if identifier.starts_with(DASHTHUMBNAIL_CONTRACT) {
-            "DashThumbnail"
+        if identifier.starts_with(&String::from(ContractType::DashPay)) {
+            ContractType::DashPay.name()
+        } else if identifier.starts_with(&String::from(ContractType::DPNS)) {
+            ContractType::DPNS.name()
+        } else if identifier.starts_with(&String::from(ContractType::DashThumbnail)) {
+            ContractType::DashThumbnail.name()
         } else {
             "Unnamed Contract"
         }.to_string()

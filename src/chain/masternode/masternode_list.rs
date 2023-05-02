@@ -1,12 +1,11 @@
-use hashes::{sha256, Hash};
 use std::collections::BTreeMap;
 use crate::chain::common::LLMQType;
+use crate::chain::masternode::{LLMQEntry, MasternodeEntry};
 use crate::chain::tx::CoinbaseTransaction;
 use crate::consensus::Encodable;
-use crate::crypto::byte_util::{merkle_root_from_hashes, Reversable, Zeroable};
+use crate::crypto::byte_util::{Reversable, Zeroable};
 use crate::crypto::UInt256;
-use crate::models::{LLMQEntry, MasternodeEntry};
-
+use crate::util::data_ops::merkle_root_from_hashes;
 // from https://en.bitcoin.it/wiki/Protocol_specification#Merkle_Trees
 // Merkle trees are binary trees of hashes. Merkle trees in bitcoin use a double SHA-256, the SHA-256 hash of the
 // SHA-256 hash of something. If, when forming a row in the tree (other than the root of the tree), it would have an odd
@@ -237,7 +236,7 @@ impl MasternodeList {
         hashes
     }
 
-    pub fn quorums_of_type(&self, r#type: LLMQType) -> Vec<LLMQEntry> {
+    pub fn quorums_of_type(&self, r#type: LLMQType) -> Vec<&LLMQEntry> {
         if let Some(quorums_of_type) = &self.quorums.get(&r#type) {
             quorums_of_type.values().collect()
         } else {

@@ -1,23 +1,16 @@
-use std::cmp;
 use std::cmp::Ordering;
 use std::collections::HashSet;
+use std::fmt::Debug;
 use std::hash::Hasher;
-use std::intrinsics::roundf64;
-use byte::ctx::Endian;
 use byte::{BytesExt, LE, TryRead};
 use chrono::NaiveDateTime;
-use diesel::{Insertable, QueryResult, QuerySource, Table};
-use diesel::insertable::CanInsertInSingleQuery;
-use diesel::query_builder::{AsChangeset, QueryFragment};
-use diesel::sqlite::Sqlite;
-use hashes::hex::ToHex;
-use hashes::{Hash, sha256d};
 use secp256k1::rand::{Rng, thread_rng};
-use crate::blockdata::opcodes::all::{OP_EQUALVERIFY, OP_RETURN};
+use crate::blockdata::opcodes::all::OP_RETURN;
 use crate::chain::chain::Chain;
-use crate::chain::extension::accounts::Accounts;
-use crate::chain::extension::transactions::Transactions;
-use crate::chain::params::{TX_FEE_PER_B, TX_FEE_PER_INPUT, TX_INPUT_SIZE, TX_MIN_OUTPUT_AMOUNT, TX_OUTPUT_SIZE};
+use crate::chain::ext::accounts::Accounts;
+use crate::chain::ext::settings::Settings;
+use crate::chain::ext::transactions::Transactions;
+use crate::chain::params::{ScriptMap, TX_FEE_PER_B, TX_FEE_PER_INPUT, TX_INPUT_SIZE, TX_MIN_OUTPUT_AMOUNT, TX_OUTPUT_SIZE};
 use crate::chain::tx::instant_send_transaction_lock::InstantSendTransactionLock;
 use crate::chain::tx::transaction_input::TransactionInput;
 use crate::chain::tx::transaction_output::TransactionOutput;
@@ -27,23 +20,23 @@ use crate::chain::wallet::account::Account;
 use crate::chain::wallet::wallet::Wallet;
 use crate::consensus::encode::VarInt;
 use crate::consensus::Encodable;
-use crate::crypto::{UInt256, VarBytes};
+use crate::crypto::UInt256;
 use crate::crypto::byte_util::{AsBytes, AsBytesVec, Zeroable};
-use crate::crypto::data_ops::{Data, DataAppend};
-use crate::derivation::derivation_path::{DerivationPathKind, IDerivationPath};
-use crate::derivation::incoming_funds_derivation_path::IncomingFundsDerivationPath;
+use crate::derivation::derivation_path::IDerivationPath;
+use crate::derivation::derivation_path_kind::DerivationPathKind;
 use crate::keys::ecdsa_key::ECDSAKey;
 use crate::keys::key::IKey;
 use crate::platform::identity::identity::Identity;
+use crate::platform::identity::invitation::Invitation;
 use crate::storage::manager::managed_context::ManagedContext;
 use crate::storage::models::chain::chain::ChainEntity;
 use crate::storage::models::common::address::AddressEntity;
 use crate::storage::models::common::shapeshift::{ShapeshiftAddressStatus, ShapeshiftEntity};
-use crate::storage::models::entity::{Entity, EntityConvertible, EntityUpdates};
+use crate::storage::models::entity::Entity;
 use crate::storage::models::tx::transaction::{NewTransactionEntity, TransactionEntity};
-use crate::storage::models::tx::transaction_input::NewTransactionInputEntity;
-use crate::storage::models::tx::transaction_output::NewTransactionOutputEntity;
-use crate::util::crypto::{address_with_public_key_data, address_with_script_pub_key, address_with_script_sig, shapeshift_outbound_address_for_script, shapeshift_outbound_address_force_script};
+use crate::util::data_append::DataAppend;
+use crate::util::address::Address;
+use crate::util::script::ScriptElement;
 
 // block height indicating transaction is unconfirmed
 pub const TX_UNCONFIRMED: i32 = i32::MAX;
@@ -53,22 +46,25 @@ pub static TX_VERSION: u32 = 0x00000001;
 pub static SPECIAL_TX_VERSION: u32 = 0x00000003;
 pub static TX_LOCKTIME: u32 = 0x00000000;
 pub static TXIN_SEQUENCE: u32 = u32::MAX;
+// a lockTime below this value is a block height, otherwise a timestamp
+pub const TX_MAX_LOCK_HEIGHT: u32 = 500000000;
 
 pub const MAX_ECDSA_SIGNATURE_SIZE: usize = 75;
 
 
-pub trait ITransaction: EntityConvertible {
+pub trait ITransaction: Debug + Send + Sync {
     fn chain(&self) -> &Chain;
-    fn accounts(&self) -> Vec<&Account> {
+    fn accounts(&self) -> Vec<&Account> where Self: Sized {
         self.chain().accounts_that_can_contain_transaction(self)
     }
-    fn first_account(&self) -> Option<&Account> {
+    fn first_account(&self) -> Option<&Account> where Self: Sized {
         self.chain().first_account_that_can_contain_transaction(self)
     }
 
     fn r#type(&self) -> TransactionType;
     fn block_height(&self) -> u32;
     fn tx_hash(&self) -> UInt256;
+    fn tx_lock_time(&self) -> u32;
     fn inputs(&self) -> Vec<TransactionInput>;
     fn outputs(&self) -> Vec<TransactionOutput>;
     fn input_addresses(&self) -> Vec<String>;
@@ -90,22 +86,37 @@ pub trait ITransaction: EntityConvertible {
 
     fn set_instant_send_received_with_instant_send_lock(&mut self, instant_send_lock: Option<&InstantSendTransactionLock>);
     fn is_coinbase_classic_transaction(&self) -> bool;
-    fn has_set_inputs_and_outputs(&self) {}
+    fn has_set_inputs_and_outputs(&mut self) {}
     fn has_non_dust_output_in_wallet(&self, wallet: &Wallet) -> bool;
 
     fn transaction_type_requires_inputs(&self) -> bool {
         self.r#type().requires_inputs()
     }
+
+    fn set_initial_persistent_attributes_in_context(&mut self, context: &ManagedContext) -> bool;
     fn to_entity_with_chain_entity(&self, chain_entity: ChainEntity) -> NewTransactionEntity;
+
+    fn sign_with_private_keys(&mut self, keys: Vec<ECDSAKey>) -> bool {
+        self.sign_with_private_keys_using_addresses(
+            keys,
+            keys.iter()
+                .map(|mut key| Address::with_public_key_data(&key.public_key_data(), self.chain().script()))
+                .collect())
+    }
+
+    fn trigger_updates_for_local_references(&self) {}
+    fn associate_with_accepted_invitation(&self, invitation: &Invitation, index: u32, dashpay_username: String, wallet: &Wallet) -> Identity {
+        panic!("Only for CreditFunding")
+    }
+    fn load_blockchain_identities_from_derivation_paths(&mut self, derivation_paths: Vec<&dyn IDerivationPath>);
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Transaction {
     pub inputs: Vec<TransactionInput>,
     pub outputs: Vec<TransactionOutput>,
     pub lock_time: u32,
     pub version: u16,
-    // todo: avoid option here
     pub tx_hash: UInt256,
     pub tx_type: TransactionType,
     pub payload_offset: usize,
@@ -124,6 +135,13 @@ pub struct Transaction {
     confirmed: bool,
 }
 
+// impl_bytes_decodable!(Transaction);
+// impl<'a> BytesDecodable<'a, Transaction> for Transaction {
+//     fn from_bytes(bytes: &'a [u8], offset: &mut usize) -> Option<Self> {
+//         bytes.read_with(offset, LE).ok()
+//     }
+// }
+
 impl PartialEq<Self> for dyn ITransaction {
     fn eq(&self, other: &Self) -> bool {
         self == other || self.tx_hash() == other.tx_hash()
@@ -136,48 +154,54 @@ impl std::hash::Hash for Transaction {
     }
 }
 
-impl EntityConvertible for Transaction {
-    fn to_entity<T, U>(&self) -> U
-        where
-            T: Table + QuerySource,
-            T::FromClause: QueryFragment<Sqlite>,
-            U: Insertable<T>, diesel::insertable::Values: QueryFragment<Sqlite> + CanInsertInSingleQuery<Sqlite> {
-
+impl From<Transaction> for NewTransactionEntity {
+    fn from(value: Transaction) -> Self {
         NewTransactionEntity {
-            hash: self.tx_hash,
-            block_height: self.block_height as i32,
-            version: self.version as i16,
-            lock_time: self.lock_time as i32,
-            timestamp: NaiveDateTime::from_timestamp_opt(self.timestamp as i64, 0).unwrap(),
-            associated_shapeshift_id: self.associated_shapeshift.and_then(|shapeshift| Some(shapeshift.id)),
+            hash: value.tx_hash,
+            block_height: value.block_height as i32,
+            version: value.version as i16,
+            lock_time: value.lock_time as i32,
+            timestamp: NaiveDateTime::from_timestamp_opt(value.timestamp as i64, 0).unwrap(),
+            associated_shapeshift_id: value.associated_shapeshift.and_then(|shapeshift| Some(shapeshift.id)),
             ..Default::default()
         }
     }
-
-    fn to_update_values<T, V>(&self) -> Box<dyn EntityUpdates<V>> where T: Table, V: AsChangeset<Target=T> {
-        todo!()
-    }
-
-    fn from_entity<T: Entity>(entity: &TransactionEntity, context: &ManagedContext) -> QueryResult<Self> {
-        ChainEntity::chain_by_id(entity.chain_id, context)
-            .and_then(|chain| entity.get_associated_shapeshift(context)
-                .and_then(|shapeshift_entity| entity.inputs(context)
-                    .and_then(|inputs| entity.outputs(context)
-                        .and_then(|outputs| entity.instant_send_lock(entity.hash, &inputs, &chain, context)
-                            .and_then(|instant_send_lock| Ok(
-                                Self::init_with(
-                                    entity.version as u16,
-                                    entity.lock_time as u32,
-                                    inputs,
-                                    outputs,
-                                    entity.hash,
-                                    entity.block_height as u32,
-                                    entity.timestamp.timestamp() as u64,
-                                    shapeshift_entity,
-                                    instant_send_lock
-                                )))))))
-    }
 }
+
+// impl EntityConvertible for Transaction {
+//     fn to_entity<T, U>(&self) -> U
+//         where
+//             T: Table + QuerySource,
+//             T::FromClause: QueryFragment<Sqlite>,
+//             U: Insertable<T>,
+//             U::Values: QueryFragment<Sqlite> + CanInsertInSingleQuery<Sqlite> {
+//
+//     }
+//
+//     fn to_update_values(&self) -> Box<dyn EntityUpdates<bool, ResultType = (bool, )>> {
+//         todo!()
+//     }
+//
+//     fn from_entity<T: Entity>(entity: T, context: &ManagedContext) -> QueryResult<Self> {
+//         ChainEntity::chain_by_id(entity.chain_id, context)
+//             .and_then(|chain| entity.get_associated_shapeshift(context)
+//                 .and_then(|shapeshift_entity| entity.inputs(context)
+//                     .and_then(|inputs| entity.outputs(context)
+//                         .and_then(|outputs| entity.instant_send_lock(entity.hash, &inputs, &chain, context)
+//                             .and_then(|instant_send_lock| Ok(
+//                                 Self::init_with(
+//                                     entity.version as u16,
+//                                     entity.lock_time as u32,
+//                                     inputs,
+//                                     outputs,
+//                                     entity.hash,
+//                                     entity.block_height as u32,
+//                                     entity.timestamp.timestamp() as u64,
+//                                     shapeshift_entity,
+//                                     instant_send_lock
+//                                 )))))))
+//     }
+// }
 
 impl ITransaction for Transaction {
     fn chain(&self) -> &Chain {
@@ -196,6 +220,10 @@ impl ITransaction for Transaction {
         self.tx_hash
     }
 
+    fn tx_lock_time(&self) -> u32 {
+        self.lock_time
+    }
+
     fn inputs(&self) -> Vec<TransactionInput> {
         self.inputs.clone()
     }
@@ -208,9 +236,9 @@ impl ITransaction for Transaction {
         // TODO: check may be it worth to keep index with Option<String>
         self.inputs.iter().filter_map(|input| {
             if let Some(script) = &input.script {
-                address_with_script_pub_key(script, self.chain())
-            } else {
-                address_with_script_sig(&input.signature, self.chain())
+                Some(Address::with_script_pub_key(script, self.chain().script()))
+            } else if let Some(signature) = &input.signature {
+                Address::with_script_sig(signature, self.chain().script())
             }
         }).collect()
     }
@@ -269,11 +297,25 @@ impl ITransaction for Transaction {
 
     /// Info
     fn has_non_dust_output_in_wallet(&self, wallet: &Wallet) -> bool {
-        self.outputs.iter().find(|output|
-            output.amount > TX_MIN_OUTPUT_AMOUNT && wallet.contains_address(output.address.clone()))
-            .is_some()
+        self.outputs.iter().find(|output| {
+            if let Some(address) = &output.address {
+                output.amount > TX_MIN_OUTPUT_AMOUNT && wallet.contains_address(address)
+            } else {
+                false
+            }
+        }).is_some()
     }
 
+    fn set_initial_persistent_attributes_in_context(&mut self, context: &ManagedContext) -> bool {
+        // TODO: impl prepare and commit changes in managed context (to delay insert) or use TransactionEntity::save_transaction_for
+        match TransactionEntity::count_transactions_for_hash(&self.tx_hash(), context) {
+            Ok(0) => match context.prepare(self.to_entity(), TransactionEntity::create) {
+                Ok(1) => true,
+                _ => false
+            },
+            _ => false
+        }
+    }
     fn to_entity_with_chain_entity(&self, chain_entity: ChainEntity) -> NewTransactionEntity {
         NewTransactionEntity {
             hash: self.tx_hash,
@@ -285,6 +327,35 @@ impl ITransaction for Transaction {
             associated_shapeshift_id: self.associated_shapeshift.and_then(|sh| Some(sh.id)).or(None),
             ..Default::default()
         }
+    }
+
+    fn trigger_updates_for_local_references(&self) {
+
+    }
+
+    fn load_blockchain_identities_from_derivation_paths(&mut self, derivation_paths: Vec<&dyn IDerivationPath>) {
+        let mut destination_identities = HashSet::new();
+        let mut source_identities = HashSet::new();
+        for output in self.outputs {
+            for derivation_path in derivation_paths {
+                if derivation_path.kind() == DerivationPathKind::IncomingFunds {
+                    if let Some(address) = &output.address {
+                        if derivation_path.contains_address(address) {
+                            let (source_identity, destination_identity) = derivation_path.load_identities();
+                            // these need to be inverted since the derivation path is incoming
+                            if let Some(value) = source_identity {
+                                destination_identities.insert(value);
+                            }
+                            if let Some(value) = destination_identity {
+                                source_identities.insert(value);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.source_identities.extend(source_identities);
+        self.destination_identities.extend(destination_identities);
     }
 }
 
@@ -406,11 +477,19 @@ impl Transaction {
 impl Transaction {
 
     pub fn shapeshift_outbound_address(&self) -> Option<String> {
-        self.outputs.iter().find_map(|output| shapeshift_outbound_address_for_script(&output.script, self.chain))
+        if self.chain.is_mainnet() {
+            self.outputs.iter()
+                .filter_map(|output| output.script)
+                .find_map(|script| Address::shapeshift_outbound_for_script(script))
+        } else {
+            None
+        }
     }
 
     pub fn shapeshift_outbound_address_force_script(&self) -> Option<String> {
-        self.outputs.iter().find_map(|output| shapeshift_outbound_address_force_script(&output.script))
+        self.outputs.iter()
+            .filter_map(|output| output.script)
+            .find_map(|script| Address::shapeshift_outbound_force_script(script))
     }
 }
 
@@ -424,8 +503,10 @@ impl Transaction {
                 if n < outputs.len() {
                     if let Some(output) = outputs.get(n) {
                         if let Some(acc) = self.chain.first_account_that_can_contain_transaction(&tx) {
-                            if acc.contains_address(output.address.clone()) {
-                                return Some(output.amount);
+                            if let Some(address) = &output.address {
+                                if acc.contains_address(address) {
+                                    return Some(output.amount);
+                                }
                             }
                         }
                     }
@@ -464,9 +545,10 @@ impl Transaction {
 
     pub fn add_output_address(&mut self, address: String, amount: u64) {
         // todo: check this is equivalent and no need to recalculate address with addressWithScriptPubKey
+
         self.outputs.push(TransactionOutput {
             amount,
-            script: Some(Vec::<u8>::script_pub_key_for_address(&address, self.chain)),
+            script: Some(Vec::<u8>::script_pub_key_for_address(&address, self.chain().script())),
             address: Some(address)
         });
     }
@@ -475,7 +557,7 @@ impl Transaction {
         self.outputs.push(
             TransactionOutput::from_script(
                 amount,
-                Vec::<u8>::script_pub_key_for_address(&address, self.chain()),
+                Vec::<u8>::script_pub_key_for_address(&address, self.chain().script()),
                 self.chain()))
     }
 
@@ -494,19 +576,22 @@ impl Transaction {
                 vec![OP_RETURN.into_u8()],
                 self.chain()));
     }
+    pub fn add_output_script(&mut self, script: &Vec<u8>, amount: u64) {
+        self.add_output_script_with_address(Some(script.clone()), Address::with_script_pub_key(script, self.chain.script()), amount)
+    }
 
-    pub fn add_output_script(&mut self, script: Option<Vec<u8>>, address: Option<String>, amount: u64) {
+    pub fn add_output_script_with_address(&mut self, script: Option<Vec<u8>>, address: Option<String>, amount: u64) {
         self.outputs.push(
             TransactionOutput::new(
                 amount,
                 script,
                 address.or_else(||
                     script.and_then(|script|
-                        address_with_script_pub_key(&script, self.chain())))));
+                        Address::with_script_pub_key(&script, self.chain().script())))));
     }
 
     pub fn set_input_address(&self, address: String, index: usize) {
-        self.inputs[index].script = Some(Vec::<u8>::script_pub_key_for_address(&address, self.chain()));
+        self.inputs[index].script = Some(Vec::<u8>::script_pub_key_for_address(&address, self.chain().script()));
     }
 
     /// fischer-yates shuffle
@@ -568,19 +653,11 @@ impl Transaction {
     pub fn sign_with_serialized_private_keys(&mut self, keys: Vec<&String>) -> bool {
         self.sign_with_private_keys(
             keys.iter()
-                .filter_map(|serialized_key|
+                .filter_map(|&serialized_key|
                     ECDSAKey::key_with_private_key(serialized_key, self.chain()))
                 .collect())
     }
 
-
-    pub fn sign_with_private_keys(&mut self, keys: Vec<&ECDSAKey>) -> bool {
-        self.sign_with_private_keys_using_addresses(
-            keys,
-            keys.iter()
-                .map(|key| key.address_with_public_key_data(self.chain()))
-                .collect())
-    }
 
     pub fn sign_with_preordered_private_keys(&mut self, keys: Vec<&dyn IKey>) -> bool {
         for (i, input) in self.inputs.iter_mut().enumerate() {
@@ -593,9 +670,11 @@ impl Transaction {
                     let elem = input_script.script_elements();
                     (SIGHASH_ALL as u8).enc(&mut s);
                     sig.append_script_push_data(&s);
-                    if elem.len() >= 2 && elem[elem.len() - 2] == OP_EQUALVERIFY {
-                        // pay-to-pubkey-hash scriptSig
-                        sig.append_script_push_data(key.public_key_data());
+                    if elem.len() >= 2 {
+                        if let ScriptElement::Data([0x88 /*OP_EQUALVERIFY*/, ..], ..) = elem[elem.len() - 2] {
+                            // pay-to-pubkey-hash scriptSig
+                            sig.append_script_push_data(&key.public_key_data());
+                        }
                     }
                     input.signature = Some(sig);
                 }
@@ -611,19 +690,21 @@ impl Transaction {
     pub fn sign_with_private_keys_using_addresses(&mut self, keys: Vec<&dyn IKey>, addresses: Vec<String>) -> bool {
         for (i, input) in self.inputs.iter_mut().enumerate() {
             if let Some(input_script) = &input.script {
-                if let Some(addr) = address_with_script_pub_key(input_script, self.chain()) {
+                if let Some(addr) = Address::with_script_pub_key(input_script, self.chain().script()) {
                     if let Some(key_idx) = addresses.iter().position(|a| a == addr) {
                         let mut sig = Vec::<u8>::new();
                         let data = self.to_data_with_subscript_index(Some(key_idx as u64));
                         let hash = UInt256::sha256d(&data);
-                        if let Some(key) = keys.get(key_idx) {
+                        if let Some(mut key) = keys.get(key_idx) {
                             let mut s = key.sign(hash.as_bytes_vec());
                             let elem = input_script.script_elements();
                             (SIGHASH_ALL as u8).enc(&mut s);
                             sig.append_script_push_data(&s);
-                            if elem.len() >= 2 && elem[elem.len() - 2] == OP_EQUALVERIFY {
-                                // pay-to-pubkey-hash scriptSig
-                                sig.append_script_push_data(key.public_key_data());
+                            if elem.len() >= 2 {
+                                if let ScriptElement::Data([0x88 /*OP_EQUALVERIFY*/, ..], ..) = elem[elem.len() - 2] {
+                                    // pay-to-pubkey-hash scriptSig
+                                    sig.append_script_push_data(&key.public_key_data());
+                                }
                             }
                             input.signature = Some(sig);
                         }
@@ -697,30 +778,6 @@ impl Transaction {
     }
 
 
-    /// Identities
-    pub fn load_blockchain_identities_from_derivation_paths(&mut self, derivation_paths: Vec<&dyn IDerivationPath>) {
-        let mut destination_identities = HashSet::new();
-        let mut source_identities = HashSet::new();
-        for output in self.outputs {
-            for derivation_path in derivation_paths {
-                if derivation_path.kind() == DerivationPathKind::IncomingFunds && derivation_path.contains_address(output.address.clone()) {
-                    let incoming_funds_derivation_path = derivation_path as IncomingFundsDerivationPath;
-                    let destination_identity = incoming_funds_derivation_path.contact_destination_blockchain_identity();
-                    let source_identity = incoming_funds_derivation_path.contact_source_blockchain_identity();
-                    // these need to be inverted since the derivation path is incoming
-                    if source_identity.is_some() {
-                        destination_identities.insert(source_identity.unwrap());
-                    }
-                    if destination_identity.is_some() {
-                        source_identities.insert(destination_identity.unwrap());
-                    }
-                }
-            }
-        }
-        self.source_identities.extend(source_identities);
-        self.destination_identities.extend(destination_identities);
-    }
-
     pub fn save(&self) {
         self.save_in_context(self.chain.chain_context());
     }
@@ -732,17 +789,6 @@ impl Transaction {
         });
     }
 
-
-    pub fn set_initial_persistent_attributes_in_context(&mut self, context: &ManagedContext) -> bool {
-        // TODO: impl prepare and commit changes in managed context (to delay insert) or use TransactionEntity::save_transaction_for
-        match TransactionEntity::count_transactions_for_hash(&self.tx_hash(), context) {
-            Ok(0) => match context.prepare(self.to_entity(), TransactionEntity::create) {
-                Ok(1) => true,
-                _ => false
-            },
-            _ => false
-        }
-    }
 
     pub fn save_initial(&mut self) -> bool {
         self.save_initial_in_context(self.chain().chain_context())
@@ -775,13 +821,28 @@ impl Transaction {
         true
     }
 }
-impl<'a> TryRead<'a, Endian> for Transaction {
-    fn try_read(bytes: &'a [u8], endian: Endian) -> byte::Result<(Self, usize)> {
+
+impl Transaction {
+    pub fn devnet_genesis_coinbase_with_identifier(identifier: String, version: u16, protocol_version: u32, amount: u64, script_address: &ScriptMap) -> UInt256 {
+        let script = OP_RETURN.into_u8().to_le_bytes().to_vec();
+        UInt256::sha256d(&Self::data_with_subscript_index_static(
+            None,
+            TX_VERSION as u16,
+            TransactionType::Classic,
+            &[TransactionInput::coinbase(&identifier, version, protocol_version)],
+            &[TransactionOutput::new(amount, Some(script), Address::with_script_pub_key(&script, script_address))],
+            TX_LOCKTIME,
+        ))
+    }
+}
+
+impl<'a> TryRead<'a, &Chain> for Transaction {
+    fn try_read(bytes: &'a [u8], chain: &Chain) -> byte::Result<(Self, usize)> {
         let offset = &mut 0;
-        let version = bytes.read_with::<u16>(offset, endian)?;
-        let tx_type_uint = bytes.read_with::<u16>(offset, endian)?;
+        let version = bytes.read_with::<u16>(offset, LE)?;
+        let tx_type_uint = bytes.read_with::<u16>(offset, LE)?;
         let tx_type = TransactionType::from(tx_type_uint);
-        let count_var = bytes.read_with::<VarInt>(offset, endian)?;
+        let count_var = bytes.read_with::<VarInt>(offset, LE)?;
         let count = count_var.0;
         // at least one input is required
         if count == 0 && tx_type.requires_inputs() {
@@ -789,15 +850,15 @@ impl<'a> TryRead<'a, Endian> for Transaction {
         }
         let mut inputs: Vec<TransactionInput> = Vec::new();
         for _i in 0..count {
-            inputs.push(bytes.read_with::<TransactionInput>(offset, endian)?);
+            inputs.push(bytes.read_with::<TransactionInput>(offset, LE)?);
         }
         let mut outputs: Vec<TransactionOutput> = Vec::new();
-        let count_var = bytes.read_with::<VarInt>(offset, endian)?;
+        let count_var = bytes.read_with::<VarInt>(offset, LE)?;
         let count = count_var.0;
         for _i in 0..count {
-            outputs.push(bytes.read_with::<TransactionOutput>(offset, endian)?);
+            outputs.push(bytes.read_with::<TransactionOutput>(offset, LE)?);
         }
-        let lock_time = bytes.read_with::<u32>(offset, endian)?;
+        let lock_time = bytes.read_with::<u32>(offset, LE)?;
         let mut tx = Self {
             inputs,
             outputs,
@@ -806,6 +867,7 @@ impl<'a> TryRead<'a, Endian> for Transaction {
             lock_time,
             payload_offset: *offset,
             block_height: TX_UNCONFIRMED as u32,
+            chain,
             ..Default::default()
         };
         if tx_type != TransactionType::Classic {
@@ -822,7 +884,7 @@ impl<'a> TryRead<'a, Endian> for Transaction {
                     tx.associated_shapeshift = Some(entity);
                 } else if let Some(possibleOutboundShapeshiftAddress) = tx.shapeshift_outbound_address_force_script() {
                     if let Ok(mut entity) = ShapeshiftEntity::having_withdrawal_address(&possibleOutboundShapeshiftAddress, tx.chain().chain_context()) {
-                        if entity.shapeshift_status = ShapeshiftAddressStatus::Unused.into() {
+                        if entity.shapeshift_status == ShapeshiftAddressStatus::Unused.into() {
                             entity.shapeshift_status = ShapeshiftAddressStatus::NoDeposits.into();
                             // save later
                         }

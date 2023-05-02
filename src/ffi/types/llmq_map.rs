@@ -1,4 +1,4 @@
-use crate::types::llmq_entry::LLMQEntry;
+use crate::ffi::types::LLMQEntry;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]

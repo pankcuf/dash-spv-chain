@@ -1,6 +1,5 @@
 use diesel::{BoolExpressionMethods, QueryResult, QuerySource, Table};
 use diesel::query_builder::QueryFragment;
-use diesel::result::Error;
 use diesel::sqlite::Sqlite;
 use crate::crypto::UInt256;
 use crate::schema::transaction_outputs;
@@ -15,6 +14,7 @@ use crate::storage::models::tx::transaction_input::TransactionInputEntity;
 /// "address == %@"
 ///
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[diesel(table_name = transaction_outputs)]
 pub struct TransactionOutputEntity {
     pub id: i32,
 
@@ -34,7 +34,7 @@ pub struct TransactionOutputEntity {
 }
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="transaction_outputs"]
+#[diesel(table_name = transaction_outputs)]
 pub struct NewTransactionOutputEntity {
     pub account_id: Option<i32>,
     pub local_address_id: Option<i32>,
@@ -60,14 +60,15 @@ struct TransactionOutputAggregate {
 
 impl Entity for TransactionOutputEntity {
     type ID = transaction_outputs::id;
-    type ChainId = None;
+    // type ChainId = ();
 
     fn id(&self) -> i32 {
         self.id
     }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        transaction_outputs::dsl::transaction_outputs
+        todo!()
+        //         transaction_outputs::dsl::transaction_outputs
     }
 }
 
@@ -88,8 +89,8 @@ impl TransactionOutputEntity {
     pub fn aggregate_outputs(wallet_unique_id: &String, account_number: u32, context: &ManagedContext) -> QueryResult<Vec<TransactionOutputAggregate>> {
         AccountEntity::get_by_wallet_unique_id(wallet_unique_id, account_number as i32, context)
             .and_then(|account_entity| Self::get_by_account_id(account_entity.id, context)
-                .and_then(|outputs| {
-                    Ok(outputs.iter().filter_map(|&output|
+                .map(|outputs| {
+                    outputs.iter().filter_map(|&output|
                         TransactionEntity::get_by_id(output.transaction_id, context)
                             .and_then(|transaction|
                                 if let Some(input_id) = output.spent_in_input_id {
@@ -105,7 +106,7 @@ impl TransactionOutputEntity {
                                     Ok(TransactionOutputAggregate { output, transaction, ..Default::default() })
                                 }
                             ).ok())
-                        .collect())
+                        .collect()
                 }))
     }
 

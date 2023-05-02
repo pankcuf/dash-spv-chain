@@ -1,7 +1,7 @@
 use crate::crypto::UInt128;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Ord, PartialOrd, Eq)]
 pub struct SocketAddress {
     pub ip_address: UInt128, //v6, but only v4 supported
     pub port: u16,

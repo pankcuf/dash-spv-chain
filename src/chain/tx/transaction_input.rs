@@ -1,17 +1,15 @@
 use byte::{BytesExt, LE, TryRead};
 use byte::ctx::Endian;
-use diesel::query_builder::{AsChangeset, QueryFragment};
-use diesel::sqlite::Sqlite;
-use diesel::{Insertable, QueryResult, Table};
+use hashes::hex::ToHex;
 use crate::chain::tx::transaction::ITransaction;
 use crate::crypto::{UInt256, VarBytes};
-use crate::crypto::primitives::utxo::UTXO;
-use crate::storage::manager::managed_context::ManagedContext;
-use crate::storage::models::entity::{Entity, EntityConvertible, EntityUpdates};
-use crate::storage::models::tx::transaction::TransactionEntity;
-use crate::storage::models::tx::transaction_input::{NewTransactionInputEntity, TransactionInputEntity};
+use crate::crypto::byte_util::BytesDecodable;
+use crate::crypto::UTXO;
+use crate::impl_bytes_decodable;
+use crate::storage::models::tx::transaction_input::TransactionInputEntity;
+use crate::util::data_append::DataAppend;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct TransactionInput {
     pub input_hash: UInt256,
     pub index: u32,
@@ -19,6 +17,7 @@ pub struct TransactionInput {
     pub signature: Option<Vec<u8>>,
     pub sequence: u32,
 }
+impl_bytes_decodable!(TransactionInput);
 
 impl std::fmt::Debug for TransactionInput {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -63,22 +62,16 @@ impl<'a> TryRead<'a, Endian> for TransactionInput {
     }
 }
 
-impl EntityConvertible for TransactionInput {
-    fn to_entity<T, U>(&self) -> U
-        where T: Table, diesel::query_source::FromClause: QueryFragment<Sqlite>, U: Insertable<T>, diesel::insertable::Values: IValues {
-        todo!()
-    }
-
-    fn to_update_values<T, V>(&self) -> Box<dyn EntityUpdates<V>> where T: Table, V: AsChangeset<Target=T> {
-        todo!()
-    }
-
-    fn from_entity<T: Entity>(entity: T, context: &ManagedContext) -> QueryResult<Self> {
-        todo!()
-    }
-}
-
 impl TransactionInput {
+    pub fn coinbase(identifier: &String, version: u16, protocol_version: u32) -> Self {
+        TransactionInput {
+            index: u32::MAX,
+            signature: Some(Vec::<u8>::devnet_genesis_coinbase_message(identifier, version, protocol_version)),
+            sequence: u32::MAX,
+            ..Default::default()
+        }
+    }
+
     pub fn from_entity(entity: TransactionInputEntity) -> Self {
         Self {
             input_hash: entity.tx_hash,

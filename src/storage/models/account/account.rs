@@ -1,29 +1,26 @@
-use core::panicking::panic;
-use std::ops::DerefMut;
 use diesel::{BoolExpressionMethods, ExpressionMethods, QueryResult, QuerySource, RunQueryDsl, SelectableExpression, Table};
 use diesel::query_builder::QueryFragment;
-use diesel::query_dsl::filter_dsl::FilterDsl;
-use diesel::query_dsl::methods::SelectDsl;
 use diesel::sqlite::Sqlite;
-use crate::schema;
 use crate::schema::accounts;
-use crate::storage::create;
 use crate::storage::manager::managed_context::ManagedContext;
 use crate::storage::models::entity::Entity;
 
 #[derive(Identifiable, Queryable, PartialEq, Eq, Clone, Debug)]
+#[diesel(table_name = accounts)]
+#[diesel(belongs_to(ChainEntity, foreign_key = chain_id))]
 pub struct AccountEntity {
     pub id: i32,
     pub index: i32,
     pub chain_id: i32,
     pub wallet_unique_id: String,
-    pub derivation_path_ids: Vec<String>,
-    pub friend_request_ids: Vec<String>,
-    pub transaction_output_ids: Vec<String>,
+    // pub derivation_path_ids: Vec<String>,
+    // pub friend_request_ids: Vec<String>,
+    // pub transaction_output_ids: Vec<String>,
 }
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="accounts"]
+#[diesel(table_name = accounts)]
+#[diesel(belongs_to(ChainEntity, foreign_key = chain_id))]
 pub struct NewAccountEntity {
     pub index: i32,
     pub chain_id: i32,
@@ -32,13 +29,18 @@ pub struct NewAccountEntity {
 
 impl Entity for AccountEntity {
     type ID = accounts::id;
-    type ChainId = accounts::chain_id;
+    // type ChainId = accounts::chain_id;
+
+    fn id(&self) -> i32 {
+        self.id
+    }
 
     fn target<T>() -> T
         where T: Table + QuerySource,
               T::FromClause: QueryFragment<Sqlite>,
               T::AllColumns: SelectableExpression<T> {
-        accounts::dsl::accounts
+        todo!()
+        //        accounts::dsl::accounts
     }
 }
 
@@ -58,11 +60,11 @@ impl AccountEntity {
         Self::any(predicate, context)
     }
 
-    pub fn account_for_wallet_unique_id(wallet_unique_id: &String, index: i32, chain_id: i32, context: &ManagedContext) -> Option<&AccountEntity> {
+    pub fn account_for_wallet_unique_id(wallet_unique_id: &String, index: i32, chain_id: i32, context: &ManagedContext) -> Option<AccountEntity> {
         let predicate = accounts::wallet_unique_id.eq(wallet_unique_id)
             .and(accounts::index.eq(index));
         match Self::read(predicate, context) {
-            Ok(accounts) if accounts.len() == 1 => accounts.first(),
+            Ok(accounts) if accounts.len() == 1 => accounts.first().map(|a| *a),
             Ok(accounts) if accounts.is_empty() => None,
             Ok(..) => panic!("There can only be one account per index per wallet"),
             Err(err) => {

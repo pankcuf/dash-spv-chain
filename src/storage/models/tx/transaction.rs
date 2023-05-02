@@ -1,15 +1,15 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use chrono::NaiveDateTime;
 use diesel::{QueryResult, QuerySource, Table};
 use diesel::query_builder::QueryFragment;
 use diesel::sqlite::Sqlite;
 use crate::chain::chain::Chain;
 use crate::chain::common::ChainType;
-use crate::chain::tx::{Transaction, TransactionInput, TransactionOutput, TransactionType};
+use crate::chain::tx::{TransactionInput, TransactionOutput, TransactionType};
 use crate::chain::tx::instant_send_transaction_lock::InstantSendTransactionLock;
 use crate::chain::tx::transaction::ITransaction;
 use crate::crypto::{UInt128, UInt160, UInt256, UInt384};
-use crate::crypto::primitives::utxo::UTXO;
+use crate::crypto::UTXO;
 use crate::schema::transactions;
 use crate::storage::manager::managed_context::ManagedContext;
 use crate::storage::models::chain::chain::ChainEntity;
@@ -19,7 +19,7 @@ use crate::storage::models::common::shapeshift::ShapeshiftEntity;
 use crate::storage::models::entity::Entity;
 use crate::storage::models::tx::transaction_input::{NewTransactionInputEntity, TransactionInputEntity};
 use crate::storage::models::tx::transaction_output::{NewTransactionOutputEntity, TransactionOutputEntity};
-use crate::util::crypto::shapeshift_outbound_address_for_script;
+use crate::util::address::Address;
 
 /// queries:
 /// "transactionHash.txHash == %@"
@@ -28,7 +28,9 @@ use crate::util::crypto::shapeshift_outbound_address_for_script;
 /// indexation:
 /// "transactionHash.timestamp": DESC
 /// ["transactionHash.blockHeight": DESC, "transactionHash.timestamp": DESC]
-#[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[derive(Identifiable, Queryable, PartialEq, Eq, Debug, Default)]
+#[diesel(belongs_to(ChainEntity, foreign_key = chain_id))]
+#[diesel(table_name = transactions)]
 pub struct TransactionEntity {
     pub id: i32,
 
@@ -42,12 +44,12 @@ pub struct TransactionEntity {
     pub special_transaction_version: Option<i16>,
     pub height: Option<i32>,
     pub ip_address: Option<UInt128>,
-    pub port: Option<i16>,
-    pub provider_mode: Option<i32>,
-    pub provider_type: Option<i32>,
+    pub port: i16,
+    pub provider_mode: i16,
+    pub provider_type: i16,
     pub reason: Option<i32>,
     pub collateral_outpoint: Option<UTXO>,
-    pub operator_reward: Option<i16>,
+    pub operator_reward: i16,
     pub operator_key: Option<UInt384>,
     pub owner_key_hash: Option<UInt160>,
     pub voting_key_hash: Option<UInt160>,
@@ -69,7 +71,8 @@ pub struct TransactionEntity {
 }
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="transactions"]
+#[diesel(belongs_to(ChainEntity, foreign_key = chain_id))]
+#[diesel(table_name = transactions)]
 pub struct NewTransactionEntity {
     pub hash: UInt256,
     pub block_height: i32,
@@ -80,12 +83,12 @@ pub struct NewTransactionEntity {
     pub special_transaction_version: Option<i16>,
     pub height: Option<i32>,
     pub ip_address: Option<UInt128>,
-    pub port: Option<i16>,
-    pub provider_mode: Option<i16>,
-    pub provider_type: Option<i16>,
+    pub port: i16,
+    pub provider_mode: i16,
+    pub provider_type: i16,
     pub reason: Option<i32>,
     pub collateral_outpoint: Option<UTXO>,
-    pub operator_reward: Option<i16>,
+    pub operator_reward: i16,
     pub operator_key: Option<UInt384>,
     pub owner_key_hash: Option<UInt160>,
     pub voting_key_hash: Option<UInt160>,
@@ -96,6 +99,7 @@ pub struct NewTransactionEntity {
     pub llmq_list_merkle_root: Option<UInt256>,
     pub provider_registration_transaction_hash: Option<UInt256>,
     // Relationships
+    // #[diesel(column_name = "chains::id")]
     pub chain_id: i32,
     pub associated_shapeshift_id: Option<i32>,
     pub instant_send_lock_id: Option<i32>,
@@ -108,14 +112,15 @@ pub struct NewTransactionEntity {
 
 impl Entity for TransactionEntity {
     type ID = transactions::id;
-    type ChainId = transactions::chain_id;
+    // type ChainId = transactions::chain_id;
 
     fn id(&self) -> i32 {
         self.id
     }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        transactions::dsl::transactions
+        todo!()
+        //         transactions::dsl::transactions
     }
 }
 
@@ -221,11 +226,11 @@ impl TransactionEntity {
         Self::delete_by(transactions::hash.eq(tx_hash), context)
     }
 
-    fn init_output_entity(transaction: &dyn ITransaction, transaction_id: i32, output: &TransactionOutput, index: i32, context: &ManagedContext) -> NewTransactionOutputEntity {
+    fn init_output_entity(transaction: &dyn ITransaction, transaction_id: i32, chain_id: i32, output: &TransactionOutput, index: i32, context: &ManagedContext) -> NewTransactionOutputEntity {
         let mut entity = NewTransactionOutputEntity {
             tx_hash: transaction.tx_hash(),
             address: output.address.unwrap_or("".to_string()).as_str(),
-            shapeshift_outbound_address: Some(shapeshift_outbound_address_for_script(&output.script, transaction.chain()).unwrap_or("".to_string()).as_str()),
+            shapeshift_outbound_address: output.script.and_then(|script| if transaction.chain().is_mainnet() { Some(Address::shapeshift_outbound_for_script(script).unwrap_or("".to_string()).as_str()) } else { None }),
             n: index,
             value: output.amount as i64,
             script: output.script.unwrap_or(vec![]),
@@ -235,7 +240,7 @@ impl TransactionEntity {
             transaction_id,
         };
         if let Some(addr) = &output.address {
-            match AddressEntity::any_id_and_account_id_by_address_and_chain_id(addr, chain_entity.id, context) {
+            match AddressEntity::any_id_and_account_id_by_address_and_chain_id(addr, chain_id, context) {
                 Ok(aggregate) => {
                     entity.local_address_id = Some(aggregate.0);
                     entity.account_id = Some(aggregate.1);
@@ -251,13 +256,13 @@ impl TransactionEntity {
     pub fn save_transaction_for(chain_type: ChainType, transaction: &dyn ITransaction, context: &ManagedContext) -> QueryResult<usize> {
         ChainEntity::get_chain(chain_type, context)
             .and_then(|chain_entity| Self::create_and_get(transaction.to_entity_with_chain_entity(chain_entity), context)
-                .and_then(|tx_entity| Self::save_transaction_internals(&tx_entity, transaction, context)))
+                .and_then(|tx_entity| Self::save_transaction_internals(&tx_entity, transaction, chain_entity.id.clone(), context)))
     }
 
-    fn save_transaction_internals(tx_entity: &TransactionEntity, transaction: &dyn ITransaction, context: &ManagedContext) -> QueryResult<usize> {
-        TransactionOutputEntity::create_many(transaction.outputs().iter().enumerate().map(|(index, output)| Self::init_output_entity(transaction, tx_entity.id, output, index as i32, context)).collect(), context)
-            .and_then(|tx_output_entities|
-                Ok(1 + tx_output_entities.len() + transaction.inputs()
+    fn save_transaction_internals(tx_entity: &TransactionEntity, transaction: &dyn ITransaction, chain_id: i32, context: &ManagedContext) -> QueryResult<usize> {
+        TransactionOutputEntity::create_many(transaction.outputs().iter().enumerate().map(|(index, output)| Self::init_output_entity(transaction, tx_entity.id, chain_id, output, index as i32, context)).collect(), context)
+            .map(|tx_output_entities|
+                1 + tx_output_entities.len() + transaction.inputs()
                     .iter()
                     .enumerate()
                     .filter_map(|(index, input)| {
@@ -268,7 +273,7 @@ impl TransactionEntity {
                             signature: input.signature.unwrap_or(vec![]),
                             local_address_id: None,
                             prev_output_id: None,
-                            transaction_id,
+                            transaction_id: tx_entity.id,
                         };
                         if let Ok(output_entity) = TransactionOutputEntity::get_by_tx_hash_and_index(&transaction.tx_hash(), input.index, context) {
                             new_entity.local_address_id = output_entity.local_address_id;
@@ -277,7 +282,7 @@ impl TransactionEntity {
                             println!("can't retrieve transaction output entity");
                             TransactionInputEntity::create(new_entity, context).ok()
                         }
-                    }).sum()))
+                    }).sum())
     }
 
     pub fn save_transaction_if_need_for(chain_type: ChainType, transaction: &dyn ITransaction, context: &ManagedContext) -> QueryResult<TransactionEntity> {
@@ -285,12 +290,11 @@ impl TransactionEntity {
             .and_then(|chain_entity|
                 match Self::get_by_tx_hash(&transaction.tx_hash(), context) {
                     Ok(tx_entity) =>
-                        Self::save_transaction_internals(&tx_entity, transaction, context)
+                        Self::save_transaction_internals(&tx_entity, transaction, chain_entity.id, context)
                             .and(Ok(tx_entity)),
                     Err(diesel::result::Error::NotFound) =>
                         Self::create_and_get(transaction.to_entity_with_chain_entity(chain_entity), context)
-                            .and_then(|tx_entity| Self::save_transaction_internals(&tx_entity, transaction, context))
-                            .and(Ok(tx_entity)),
+                            .and_then(|tx_entity| Self::save_transaction_internals(&tx_entity, transaction, chain_entity.id.clone(), context).and(Ok(tx_entity))),
                     Err(err) => panic!("Can't save transaction entity")
                 })
 

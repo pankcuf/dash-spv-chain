@@ -2,7 +2,10 @@ use hashes::hex::FromHex;
 use crate::chain::common::LLMQType;
 use crate::crypto::byte_util::Reversable;
 use crate::crypto::UInt256;
+
 pub const USER_AGENT: String = format!("/dash-spv-core:{}", env!("CARGO_PKG_VERSION"));
+const MAINNET_DNS_SEEDS: Vec<&str> = vec!["dnsseed.dash.org"];
+const TESTNET_DNS_SEEDS: Vec<&str> = vec!["testnet-seed.dashdot.io"];
 
 pub trait IHaveChainSettings {
     fn genesis_hash(&self) -> UInt256;
@@ -13,20 +16,20 @@ pub trait IHaveChainSettings {
     fn should_process_llmq_of_type(&self, llmq_type: LLMQType) -> bool;
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
 pub enum ChainType {
+    #[default]
     MainNet,
     TestNet,
     DevNet(DevnetType),
 }
-
 
 impl From<i16> for ChainType {
     fn from(orig: i16) -> Self {
         match orig {
             0 => ChainType::MainNet,
             1 => ChainType::TestNet,
-            _ => ChainType::DevNet,
+            _ => ChainType::DevNet(DevnetType::default()),
         }
     }
 }
@@ -41,11 +44,13 @@ impl From<ChainType> for i16 {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
 pub enum DevnetType {
     JackDaniels,
     Devnet333,
     Chacha,
+    #[default]
+    Mojito,
 }
 
 impl DevnetType {
@@ -54,6 +59,7 @@ impl DevnetType {
             DevnetType::JackDaniels => "jack-daniels".to_string(),
             DevnetType::Devnet333 => "333".to_string(),
             DevnetType::Chacha => "chacha".to_string(),
+            DevnetType::Mojito => "mojito".to_string(),
         }
     }
 
@@ -68,7 +74,7 @@ impl ChainType {
     }
 
     pub fn user_agent(&self) -> String {
-        match self.params.chain_type {
+        match self {
             ChainType::MainNet => format!("{}/", USER_AGENT),
             ChainType::TestNet => format!("{}(testnet)/", USER_AGENT),
             ChainType::DevNet(devnet_type) => format!("{}(devnet.{})/", USER_AGENT, devnet_type.identifier())
@@ -94,7 +100,16 @@ impl ChainType {
             None
         }
     }
+
+    pub fn dns_seeds(&self) -> Vec<&str> {
+        match self {
+            ChainType::MainNet => MAINNET_DNS_SEEDS,
+            ChainType::TestNet => TESTNET_DNS_SEEDS,
+            ChainType::DevNet(_) => vec![]
+        }
+    }
 }
+
 impl IHaveChainSettings for ChainType {
 
     fn genesis_hash(&self) -> UInt256 {
@@ -150,9 +165,10 @@ impl IHaveChainSettings for ChainType {
 impl IHaveChainSettings for DevnetType {
 
     fn genesis_hash(&self) -> UInt256 {
-        UInt256::from_hex("00000bafbc94add76cb75e2ec92894837288a481e5c005f6563d91623bf8bc2c")
-            .unwrap()
-            .reversed()
+        UInt256::from_hex(match self {
+            DevnetType::Mojito => "739507391fa00da48a2ecae5df3b5e40b4432243603db6dafe33ca6b4966e357",
+            _ => "00000bafbc94add76cb75e2ec92894837288a481e5c005f6563d91623bf8bc2c"
+        }).unwrap().reversed()
     }
 
     fn is_llmq_type(&self) -> LLMQType {

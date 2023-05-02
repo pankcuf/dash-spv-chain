@@ -11,12 +11,12 @@ pub trait Invitations {
 
 impl Invitations for Chain {
     fn local_blockchain_invitations_count(&self) -> u32 {
-        self.wallets.iter().map(|wallet| wallet.blockchain_invitations_count()).sum()
+        self.wallets.iter().map(|wallet| wallet.invitations_count()).sum()
     }
 
     fn wipe_blockchain_invitations_persisted_data_in_context(&mut self, context: &ManagedContext) {
         context.perform_block_and_wait(|context| {
-            InvitationEntity::delete_for_chain_type(self.r#type(), context)
+            InvitationEntity::delete_for_chain_type::<crate::schema::invitations::dsl::invitations>(self.r#type(), context)
                 .expect("Can't delete invitation entities");
         })
     }

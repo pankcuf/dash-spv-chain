@@ -1,4 +1,6 @@
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum DerivationPathReference {
+    #[default]
     Unknown = 0,
     BIP32 = 1,
     BIP44 = 2,
@@ -64,6 +66,27 @@ impl From<u32> for DerivationPathReference {
 
 impl From<DerivationPathReference> for u32 {
     fn from(value: DerivationPathReference) -> Self {
+        match value {
+            DerivationPathReference::Unknown => 0,
+            DerivationPathReference::BIP32 => 1,
+            DerivationPathReference::BIP44 => 2,
+            DerivationPathReference::BlockchainIdentities => 3,
+            DerivationPathReference::ProviderFunds => 4,
+            DerivationPathReference::ProviderVotingKeys => 5,
+            DerivationPathReference::ProviderOperatorKeys => 6,
+            DerivationPathReference::ProviderOwnerKeys => 7,
+            DerivationPathReference::ContactBasedFunds => 8,
+            DerivationPathReference::ContactBasedFundsRoot => 9,
+            DerivationPathReference::ContactBasedFundsExternal => 10,
+            DerivationPathReference::BlockchainIdentityCreditRegistrationFunding => 11,
+            DerivationPathReference::BlockchainIdentityCreditTopupFunding => 12,
+            DerivationPathReference::BlockchainIdentityCreditInvitationFunding => 13,
+            DerivationPathReference::Root => 255,
+        }
+    }
+}
+impl From<&DerivationPathReference> for u32 {
+    fn from(value: &DerivationPathReference) -> Self {
         match value {
             DerivationPathReference::Unknown => 0,
             DerivationPathReference::BIP32 => 1,

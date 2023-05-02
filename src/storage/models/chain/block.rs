@@ -1,16 +1,15 @@
 use std::collections::HashMap;
-use std::ops::DerefMut;
 use chrono::NaiveDateTime;
-use diesel::{BoolExpressionMethods, EqAll, ExpressionMethods, QueryDsl, QueryResult, QuerySource, RunQueryDsl, Table};
+use diesel::{BoolExpressionMethods, ExpressionMethods, QueryResult, QuerySource, Table};
 use diesel::query_builder::QueryFragment;
 use diesel::sqlite::Sqlite;
-use crate::chain::block::{IBlock, MerkleBlock};
+use crate::chain::block::IBlock;
 use crate::chain::common::ChainType;
 use crate::crypto::UInt256;
-use crate::schema::{blocks, merkle_blocks};
+use crate::schema::blocks;
 use crate::storage::manager::managed_context::ManagedContext;
 use crate::storage::models::chain::chain::ChainEntity;
-use crate::storage::models::entity::{Entity, EntityConvertible, EntityUpdates};
+use crate::storage::models::entity::Entity;
 use crate::storage::models::masternode::QuorumEntity;
 
 /// queries:
@@ -24,7 +23,8 @@ use crate::storage::models::masternode::QuorumEntity;
 /// "blockHash in %@"
 /// indexation:
 /// "height" DESC
-#[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[derive(Identifiable, Queryable, PartialEq, Eq, Debug, Default)]
+#[diesel(table_name = blocks)]
 pub struct BlockEntity {
     pub id: i32,
     pub chain_id: i32,
@@ -46,8 +46,8 @@ pub struct BlockEntity {
 
 }
 
-#[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="blocks"]
+#[derive(Insertable, PartialEq, Eq, Debug, Default)]
+#[diesel(table_name = blocks)]
 pub struct NewBlockEntity {
     pub chain_id: i32,
     pub chain_lock_id: Option<i32>,
@@ -69,14 +69,15 @@ pub struct NewBlockEntity {
 
 impl Entity for BlockEntity {
     type ID = blocks::id;
-    type ChainId = blocks::chain_id;
+    // type ChainId = blocks::chain_id;
 
     fn id(&self) -> i32 {
         self.id
     }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        blocks::dsl::merkle_blocks
+        todo!()
+        //         blocks::dsl::blocks
     }
 }
 
@@ -86,11 +87,11 @@ impl BlockEntity {
     }
 
     pub fn get_by_hash(block_hash: &UInt256, context: &ManagedContext) -> QueryResult<BlockEntity> {
-        let predicate = merkle_blocks::block_hash.eq(block_hash);
+        let predicate = blocks::block_hash.eq(block_hash);
         Self::any(predicate, context)
     }
 
-    pub fn delete_orphan_blocks(chain_type: ChainType, from_height: u32, keep_block_hashes: &Vec<UInt256>, context: &ManagedContext) -> QueryResult<usize> {
+    pub fn delete_orphan_blocks(chain_type: ChainType, from_height: u32, keep_block_hashes: Vec<UInt256>, context: &ManagedContext) -> QueryResult<usize> {
         // "(chain == %@) && (height > %u) && !(blockHash in %@)",
         // [self chainEntityInContext:self.chainManagedObjectContext],
         // startHeight,
@@ -104,7 +105,7 @@ impl BlockEntity {
                     context))
     }
 
-    pub fn delete_blocks(chain_type: ChainType, keep_block_hashes: &Vec<UInt256>, context: &ManagedContext) -> QueryResult<usize> {
+    pub fn delete_blocks(chain_type: ChainType, keep_block_hashes: Vec<UInt256>, context: &ManagedContext) -> QueryResult<usize> {
         Self::chain_entity(chain_type, context)
             .and_then(|chain| BlockEntity::read(
                 blocks::chain_id.eq(chain.id)
@@ -120,7 +121,7 @@ impl BlockEntity {
                     context)))
     }
 
-    pub fn update_blocks(chain_type: ChainType, blocks: &mut HashMap<UInt256, dyn IBlock>, context: &ManagedContext) -> QueryResult<usize> {
+    pub fn update_blocks(chain_type: ChainType, blocks: &mut HashMap<UInt256, &dyn IBlock>, context: &ManagedContext) -> QueryResult<usize> {
         Self::chain_entity(chain_type, context)
             .and_then(|chain|
                 blocks.iter()

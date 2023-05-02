@@ -15,3 +15,6 @@ pub mod username_status;
 pub mod potential_one_way_friendship;
 pub mod potential_contact;
 pub mod contact_request;
+pub mod domain_request;
+pub mod profile_request;
+pub mod preorder_request;

@@ -1,5 +1,6 @@
 use crate::chain::chain::Chain;
-use crate::chain::network::peer::Peer;
+use crate::chain::network::Peer;
+use crate::chain::spork::Spork;
 use crate::manager::peer_manager;
 use crate::platform::identity::identity::Identity;
 use crate::platform::identity::invitation::Invitation;
@@ -26,7 +27,7 @@ pub enum Notification<'a> {
     GovernanceVotesDidChange(&'a Chain),
     GovernanceObjectCountUpdate(&'a Chain),
     GovernanceVoteCountUpdate(&'a Chain),
-    IdentityDidUpdate(&'a Chain, &'a Identity, Option<&'a Vec<String>>),
+    IdentityDidUpdate(&'a Chain, &'a Identity, Option<&'a Vec<&'a str>>),
     IdentityDidUpdateUsernameStatus {
         chain: &'a Chain,
         identity: &'a Identity,
@@ -39,7 +40,11 @@ pub enum Notification<'a> {
     PeersConnectedDidChange(&'a Chain), // DSPeerManagerConnectedPeersDidChangeNotification
     PeersDidChange(&'a Chain), // DSPeerManagerPeersDidChangeNotification
     PeersDownloadPeerDidChange(&'static Chain),
-    SporkListDidUpdate(&'a Chain),
+    SporkListDidUpdate {
+        chain: &'a Chain,
+        old: Option<&'a Spork>,
+        new: Option<&'a Spork>,
+    },
     TransactionStatusDidChange(&'a Chain), //DSTransactionManagerTransactionStatusDidChangeNotification
     WalletBalanceDidChange,
     WalletsDidChange(&'a Chain),
@@ -51,6 +56,7 @@ pub enum NotificationInfo {
 
 }
 
+#[derive(Debug, Default)]
 pub struct NotificationCenter {
 }
 

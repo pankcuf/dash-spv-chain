@@ -5,5 +5,6 @@ CREATE TABLE coinbase_transactions
     base_id INTEGER NOT NULL,
 
     height INTEGER NOT NULL,
-    merkle_root_mn_list BLOB NOT NULL
+    merkle_root_mn_list BLOB NOT NULL,
+    locked_amount UNSIGNED BIG INT
 )

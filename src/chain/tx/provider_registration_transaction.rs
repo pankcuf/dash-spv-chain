@@ -1,17 +1,11 @@
-use std::net::IpAddr;
-use byte::ctx::Endian;
 use byte::{BytesExt, TryRead};
-use chrono::format::format;
-use diesel::{Insertable, QueryResult, QuerySource, Table};
-use diesel::insertable::CanInsertInSingleQuery;
-use diesel::query_builder::{AsChangeset, QueryFragment};
-use diesel::sqlite::Sqlite;
 use crate::crypto::{UInt128, UInt160, UInt256, UInt384, VarBytes};
 use crate::chain::tx::transaction::{ITransaction, MAX_ECDSA_SIGNATURE_SIZE, SIGHASH_ALL};
 use crate::chain::tx::Transaction;
 use crate::chain::chain::Chain;
 use crate::chain::constants::DASH_MESSAGE_MAGIC;
-use crate::chain::extension::wallets::Wallets;
+use crate::chain::ext::settings::Settings;
+use crate::chain::ext::wallets::Wallets;
 use crate::chain::masternode::local_masternode::LocalMasternode;
 use crate::chain::tx::instant_send_transaction_lock::InstantSendTransactionLock;
 use crate::chain::tx::transaction_input::TransactionInput;
@@ -21,18 +15,18 @@ use crate::chain::wallet::wallet::Wallet;
 use crate::consensus::Encodable;
 use crate::consensus::encode::VarInt;
 use crate::crypto::byte_util::{AsBytesVec, Reversable, Zeroable};
-use crate::crypto::data_ops::DataAppend;
-use crate::crypto::primitives::utxo::UTXO;
+use crate::util::data_append::DataAppend;
+use crate::crypto::UTXO;
+use crate::derivation::derivation_path::IDerivationPath;
 use crate::keys::ecdsa_key::ECDSAKey;
 use crate::storage::manager::managed_context::ManagedContext;
 use crate::storage::models::chain::chain::ChainEntity;
-use crate::storage::models::common::address::AddressEntity;
-use crate::storage::models::entity::{Entity, EntityConvertible, EntityUpdates};
 use crate::storage::models::tx::transaction::NewTransactionEntity;
-use crate::util::crypto::{address_from_hash160_for_chain, address_with_public_key_data, address_with_script_pub_key};
+use crate::util::address::Address;
 
 pub const MASTERNODE_COST: u64 = 100000000000;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProviderRegistrationTransaction {
     pub base: Transaction,
     pub owner_key_hash: UInt160,
@@ -51,20 +45,6 @@ pub struct ProviderRegistrationTransaction {
     pub payload_signature: Vec<u8>,
 }
 
-impl EntityConvertible for ProviderRegistrationTransaction {
-    fn to_entity<T, U>(&self) -> U where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite>, U: Insertable<T>, diesel::insertable::Values: QueryFragment<Sqlite> + CanInsertInSingleQuery<Sqlite> {
-        todo!()
-    }
-
-    fn to_update_values<T, V>(&self) -> Box<dyn EntityUpdates<V>> where T: Table, V: AsChangeset<Target=T> {
-        todo!()
-    }
-
-    fn from_entity<T: Entity>(entity: T, context: &ManagedContext) -> QueryResult<Self> {
-        todo!()
-    }
-}
-
 impl ITransaction for ProviderRegistrationTransaction {
     fn chain(&self) -> &Chain {
         self.base.chain()
@@ -80,6 +60,10 @@ impl ITransaction for ProviderRegistrationTransaction {
 
     fn tx_hash(&self) -> UInt256 {
         self.base.tx_hash()
+    }
+
+    fn tx_lock_time(&self) -> u32 {
+        self.base.tx_lock_time()
     }
 
     fn inputs(&self) -> Vec<TransactionInput> {
@@ -103,7 +87,7 @@ impl ITransaction for ProviderRegistrationTransaction {
             return self.to_data().len();
         }
         self.base.size() +
-            VarInt(self.payload_data().len() as u64) +
+            VarInt(self.payload_data().len() as u64).len() +
             self.base_payload_data().len() +
             MAX_ECDSA_SIGNATURE_SIZE
     }
@@ -152,18 +136,22 @@ impl ITransaction for ProviderRegistrationTransaction {
         self.base.has_non_dust_output_in_wallet(wallet)
     }
 
+    fn set_initial_persistent_attributes_in_context(&mut self, context: &ManagedContext) -> bool {
+        todo!()
+    }
+
     fn to_entity_with_chain_entity(&self, chain_entity: ChainEntity) -> NewTransactionEntity {
         let mut base = self.base.to_entity_with_chain_entity(chain_entity);
         base.special_transaction_version = Some(self.provider_registration_transaction_version as i16);
-        base.provider_type = Some(self.provider_type as i16);
-        base.provider_mode = Some(self.provider_mode as i16);
+        base.provider_type = self.provider_type as i16;
+        base.provider_mode = self.provider_mode as i16;
         base.collateral_outpoint = Some(self.collateral_outpoint);
         base.ip_address = Some(self.ip_address);
-        base.port = Some(self.port as i16);
+        base.port = self.port as i16;
         base.owner_key_hash = Some(self.owner_key_hash);
         base.operator_key = Some(self.operator_key);
         base.voting_key_hash = Some(self.voting_key_hash);
-        base.operator_reward = Some(self.operator_reward as i16);
+        base.operator_reward = self.operator_reward as i16;
         base.script_payout = Some(self.script_payout.clone());
         base.payload_signature = Some(self.payload_signature.clone());
         // let owner_address = address_from_hash160_for_chain(&self.owner_key_hash, self.chain());
@@ -217,6 +205,17 @@ impl ITransaction for ProviderRegistrationTransaction {
 
         base
     }
+
+    fn trigger_updates_for_local_references(&self) {
+        if self.chain().wallet_having_provider_owner_authentication_hash(&self.owner_key_hash).is_some() ||
+            self.chain().wallet_having_provider_voting_authentication_hash(&self.voting_key_hash).is_some() ||
+            self.chain().wallet_having_provider_operator_authentication_key(&self.operator_key).is_some() {
+            self.chain().masternode_manager().local_masternode_from_provider_registration_transaction(self, true);
+        }
+    }
+    fn load_blockchain_identities_from_derivation_paths(&mut self, derivation_paths: Vec<&dyn IDerivationPath>) {
+        self.base.load_blockchain_identities_from_derivation_paths(derivation_paths)
+    }
 }
 
 impl ProviderRegistrationTransaction {
@@ -229,8 +228,8 @@ impl ProviderRegistrationTransaction {
         format!("{}|{}|{}|{}|{}",
                 self.payout_address().unwrap_or(String::new()),
                 self.operator_reward,
-                self.owner_address().unwrap_or(String::new()),
-                self.voting_address().unwrap_or(String::new()),
+                self.owner_address(),
+                self.voting_address(),
                 self.payload_hash().clone().reversed())
     }
 
@@ -242,13 +241,16 @@ impl ProviderRegistrationTransaction {
         UInt256::sha256d(&writer)
     }
 
-    pub fn check_payload_signature_with_key(&self, key: &ECDSAKey) -> bool {
+    pub fn check_payload_signature_with_key(&self, key: &mut ECDSAKey) -> bool {
         key.hash160() == self.owner_key_hash
     }
 
     pub fn check_payload_signature(&self) -> bool {
-        let provider_owner_public_key = ECDSAKey::key_recovered_from_compact_sig(&self.payload_signature, self.payload_hash());
-        self.check_payload_signature_with_key(&provider_owner_public_key)
+        if let Some(mut provider_owner_public_key) = ECDSAKey::key_recovered_from_compact_sig(&self.payload_signature, self.payload_hash()) {
+            self.check_payload_signature_with_key(&mut provider_owner_public_key)
+        } else {
+            false
+        }
     }
 
     pub fn base_payload_data(&self) -> Vec<u8> {
@@ -269,35 +271,30 @@ impl ProviderRegistrationTransaction {
         writer
     }
 
-    pub fn owner_address(&self) -> Option<String> {
-        address_from_hash160_for_chain(&self.owner_key_hash, self.chain())
+    pub fn owner_address(&self) -> String {
+        Address::from_hash160_for_script_map(&self.owner_key_hash, self.chain().script())
     }
 
-    pub fn operator_address(&self) -> Option<String> {
-        address_with_public_key_data(self.operator_key.as_bytes_vec(), self.chain())
+    pub fn operator_address(&self) -> String {
+        Address::with_public_key_data(self.operator_key.as_bytes_vec(), self.chain().script())
     }
 
     pub fn operator_key_string(&self) -> String {
         format!("{}", self.operator_key)
     }
 
-    pub fn voting_address(&self) -> Option<String> {
-        address_from_hash160_for_chain(&self.voting_key_hash, self.chain())
+    pub fn voting_address(&self) -> String {
+        Address::from_hash160_for_script_map(&self.voting_key_hash, self.chain().script())
     }
 
     pub fn holding_address(&self) -> Option<String> {
-        if let Some(index) = self.masternode_output_index() {
-            if self.collateral_outpoint.hash.is_zero() {
-                if let Some(output) = self.outputs().get(index) {
-                    return output.address.clone();
-                }
-            }
-        }
-        None
+        self.masternode_output_index()
+            .filter(|_| self.collateral_outpoint.hash.is_zero())
+            .and_then(|index| self.outputs().get(index).and_then(|out| out.address))
     }
 
     pub fn payout_address(&self) -> Option<String> {
-        address_with_script_pub_key(&self.script_payout, self.chain)
+        Address::with_script_pub_key(&self.script_payout, self.chain().script())
     }
 
     pub fn location(&self) -> String {
@@ -310,11 +307,11 @@ impl ProviderRegistrationTransaction {
                 self.collateral_outpoint.hash.clone().reversed(),
                 self.collateral_outpoint.n,
                 self.location(),
-                self.ownerAddress,
-                self.operatorKeyString,
-                self.votingAddress,
-                self.operatorReward,
-                self.payoutAddress)
+                self.owner_address(),
+                self.operator_key_string(),
+                self.voting_address(),
+                self.operator_reward,
+                self.payout_address().unwrap_or("".to_string()))
     }
 
     pub fn update_inputs_hash(&mut self) {
@@ -342,9 +339,9 @@ impl ProviderRegistrationTransaction {
 }
 
 // todo: migrate to custom trait which allows passing of custom context, like Chain etc.
-impl<'a> TryRead<'a, Endian> for ProviderRegistrationTransaction {
-    fn try_read(bytes: &'a [u8], ctx: Endian) -> byte::Result<(Self, usize)> {
-        let (mut base, mut offset) = Transaction::try_read(bytes, ctx)?;
+impl<'a> TryRead<'a, &Chain> for ProviderRegistrationTransaction {
+    fn try_read(bytes: &'a [u8], chain: &Chain) -> byte::Result<(Self, usize)> {
+        let (mut base, mut offset) = Transaction::try_read(bytes, chain)?;
         base.tx_type = TransactionType::ProviderRegistration;
         let _extra_payload_size = bytes.read_with::<VarInt>(&mut offset, byte::LE)?;
         let provider_registration_transaction_version = bytes.read_with::<u16>(&mut offset, byte::LE)?;
@@ -361,7 +358,7 @@ impl<'a> TryRead<'a, Endian> for ProviderRegistrationTransaction {
         let script_payout = bytes.read_with::<VarBytes>(&mut offset, byte::LE)?.1.to_vec();
         let inputs_hash = bytes.read_with::<UInt256>(&mut offset, byte::LE)?;
         let payload_signature = bytes.read_with::<VarBytes>(&mut offset, byte::LE)?.1.to_vec();
-        base.payload_offset = *offset;
+        base.payload_offset = offset;
         let mut tx = Self {
             base,
             owner_key_hash,
@@ -379,9 +376,9 @@ impl<'a> TryRead<'a, Endian> for ProviderRegistrationTransaction {
             payload_signature
         };
         // todo verify inputs hash
-        assert_eq!(tx.payload_data().len(), *offset, "Payload length doesn't match ");
+        assert_eq!(tx.payload_data().len(), offset, "Payload length doesn't match ");
         tx.base.tx_hash = UInt256::sha256d(&tx.to_data());
-        Ok((tx, *offset))
+        Ok((tx, offset))
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::models;
+use crate::chain::masternode;
 use crate::processing::{MNListDiffResult, ProcessingError};
 
 #[derive(Debug)]
@@ -11,14 +11,14 @@ pub struct QRInfoResult {
     pub result_at_h_3c: MNListDiffResult,
     pub result_at_h_4c: Option<MNListDiffResult>,
 
-    pub snapshot_at_h_c: models::LLMQSnapshot,
-    pub snapshot_at_h_2c: models::LLMQSnapshot,
-    pub snapshot_at_h_3c: models::LLMQSnapshot,
-    pub snapshot_at_h_4c: Option<models::LLMQSnapshot>,
+    pub snapshot_at_h_c: masternode::LLMQSnapshot,
+    pub snapshot_at_h_2c: masternode::LLMQSnapshot,
+    pub snapshot_at_h_3c: masternode::LLMQSnapshot,
+    pub snapshot_at_h_4c: Option<masternode::LLMQSnapshot>,
 
     pub extra_share: bool,
-    pub last_quorum_per_index: Vec<models::LLMQEntry>,
-    pub quorum_snapshot_list: Vec<models::LLMQSnapshot>,
+    pub last_quorum_per_index: Vec<masternode::LLMQEntry>,
+    pub quorum_snapshot_list: Vec<masternode::LLMQSnapshot>,
     pub mn_list_diff_list: Vec<MNListDiffResult>,
 }
 impl Default for QRInfoResult {

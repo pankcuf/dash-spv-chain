@@ -1,16 +1,11 @@
-use byte::ctx::Endian;
 use byte::{BytesExt, TryRead};
-use diesel::{Insertable, QueryResult, QuerySource, Table};
-use diesel::insertable::CanInsertInSingleQuery;
-use diesel::query_builder::{AsChangeset, QueryFragment};
-use diesel::sqlite::Sqlite;
 use crate::chain::chain::Chain;
-use crate::chain::extension::transactions::Transactions;
+use crate::chain::ext::settings::Settings;
+use crate::chain::ext::transactions::Transactions;
 use crate::chain::tx::instant_send_transaction_lock::InstantSendTransactionLock;
 use crate::consensus::Encodable;
 use crate::consensus::encode::VarInt;
 use crate::crypto::{UInt128, UInt256, UInt768, VarBytes};
-use crate::tx::transaction::ITransaction;
 use crate::chain::tx::Transaction;
 use crate::chain::tx::provider_registration_transaction::ProviderRegistrationTransaction;
 use crate::chain::tx::transaction::{ITransaction, SIGHASH_ALL};
@@ -19,14 +14,16 @@ use crate::chain::tx::transaction_output::TransactionOutput;
 use crate::chain::tx::transaction_type::TransactionType;
 use crate::chain::wallet::wallet::Wallet;
 use crate::crypto::byte_util::{AsBytesVec, Zeroable};
-use crate::crypto::data_ops::DataAppend;
+use crate::derivation::derivation_path::IDerivationPath;
+use crate::util::data_append::DataAppend;
 use crate::keys::bls_key::BLSKey;
 use crate::keys::key::IKey;
 use crate::storage::manager::managed_context::ManagedContext;
-use crate::storage::models::entity::{Entity, EntityConvertible, EntityUpdates};
-use crate::util::address_with_script_pub_key;
-use crate::util::crypto::address_with_script_pub_key;
+use crate::storage::models::chain::chain::ChainEntity;
+use crate::storage::models::tx::transaction::NewTransactionEntity;
+use crate::util::address::Address;
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProviderUpdateServiceTransaction {
     pub base: Transaction,
     pub provider_update_service_transaction_version: u16,
@@ -37,20 +34,6 @@ pub struct ProviderUpdateServiceTransaction {
     pub inputs_hash: UInt256,
     pub payload_signature: Vec<u8>,
     provider_registration_transaction: Option<&'static ProviderRegistrationTransaction>,
-}
-
-impl EntityConvertible for ProviderUpdateServiceTransaction {
-    fn to_entity<T, U>(&self) -> U where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite>, U: Insertable<T>, diesel::insertable::Values: QueryFragment<Sqlite> + CanInsertInSingleQuery<Sqlite> {
-        todo!()
-    }
-
-    fn to_update_values<T, V>(&self) -> Box<dyn EntityUpdates<V>> where T: Table, V: AsChangeset<Target=T> {
-        todo!()
-    }
-
-    fn from_entity<T: Entity>(entity: T, context: &ManagedContext) -> QueryResult<Self> {
-        todo!()
-    }
 }
 
 impl ITransaction for ProviderUpdateServiceTransaction {
@@ -67,6 +50,10 @@ impl ITransaction for ProviderUpdateServiceTransaction {
 
     fn tx_hash(&self) -> UInt256 {
         self.base.tx_hash()
+    }
+
+    fn tx_lock_time(&self) -> u32 {
+        self.base.tx_lock_time()
     }
 
     fn inputs(&self) -> Vec<TransactionInput> {
@@ -89,7 +76,7 @@ impl ITransaction for ProviderUpdateServiceTransaction {
         if !self.tx_hash().is_zero() {
             return self.to_data().len();
         }
-        self.base.size() + VarInt(self.payload_data().len() as u64) + self.base_payload_data().len() + 96
+        self.base.size() + VarInt(self.payload_data().len() as u64).len() + self.base_payload_data().len() + 96
     }
 
     fn payload_data(&self) -> Vec<u8> {
@@ -125,7 +112,25 @@ impl ITransaction for ProviderUpdateServiceTransaction {
     }
 
     fn has_non_dust_output_in_wallet(&self, wallet: &Wallet) -> bool {
-        self.base.has_non_dust_output_in_wallet()
+        self.base.has_non_dust_output_in_wallet(wallet)
+    }
+
+    fn set_initial_persistent_attributes_in_context(&mut self, context: &ManagedContext) -> bool {
+        self.base.set_initial_persistent_attributes_in_context(context)
+    }
+
+    fn to_entity_with_chain_entity(&self, chain_entity: ChainEntity) -> NewTransactionEntity {
+        todo!()
+    }
+
+    fn trigger_updates_for_local_references(&self) {
+        if let Some(mut local_masternode) = self.chain().masternode_manager().local_masternode_having_provider_registration_transaction_hash(&self.provider_registration_transaction_hash) {
+            local_masternode.update_with_update_service_transaction(self, true);
+        }
+    }
+
+    fn load_blockchain_identities_from_derivation_paths(&mut self, derivation_paths: Vec<&dyn IDerivationPath>) {
+        self.base.load_blockchain_identities_from_derivation_paths(derivation_paths)
     }
 }
 
@@ -155,18 +160,18 @@ impl ProviderUpdateServiceTransaction {
         assert!(self.provider_registration_transaction().is_some(), "We need a provider registration transaction");
         //[DSBLSKey keyWithPublicKey:self.providerRegistrationTransaction.operatorKey useLegacy:[self.chain useLegacyBLS]]
         // todo: check use_legacy_bls has taken from appropriate place
-        let key = BLSKey::key_with_public_key(&self.provider_registration_transaction().unwrap().operator_key, self.chain().use_legacy_bls());
+        let key = BLSKey::key_with_public_key(self.provider_registration_transaction().unwrap().operator_key.clone(), self.chain().use_legacy_bls());
         key.verify(self.payload_hash().as_bytes_vec(), &self.payload_signature)
     }
 
-    pub fn sign_payload_with_key(&mut self, key: BLSKey) {
+    pub fn sign_payload_with_key(&mut self, key: &BLSKey) {
         self.payload_signature = key.sign(&self.payload_data_for_hash())
     }
 
     pub fn payout_address(&mut self) -> Option<String> {
         if let Some(tx) = self.provider_registration_transaction() {
             if !self.script_payout.is_empty() {
-                return address_with_script_pub_key(&self.script_payout, tx.chain());
+                return Address::with_script_pub_key(&self.script_payout, tx.chain().script());
             }
         }
         None // no payout address
@@ -194,10 +199,9 @@ impl ProviderUpdateServiceTransaction {
     }
 }
 
-// todo: migrate to custom trait which allows passing of custom context, like Chain etc.
-impl<'a> TryRead<'a, Endian> for ProviderUpdateServiceTransaction {
-    fn try_read(bytes: &'a [u8], ctx: Endian) -> byte::Result<(Self, usize)> {
-        let (mut base, mut offset) = Transaction::try_read(bytes, ctx)?;
+impl<'a> TryRead<'a, &Chain> for ProviderUpdateServiceTransaction {
+    fn try_read(bytes: &'a [u8], chain: &Chain) -> byte::Result<(Self, usize)> {
+        let (mut base, mut offset) = Transaction::try_read(bytes, chain)?;
         base.tx_type = TransactionType::ProviderUpdateService;
         let _extra_payload_size = bytes.read_with::<VarInt>(&mut offset, byte::LE)?;
         let provider_update_service_transaction_version = bytes.read_with::<u16>(&mut offset, byte::LE)?;
@@ -208,7 +212,7 @@ impl<'a> TryRead<'a, Endian> for ProviderUpdateServiceTransaction {
         let script_payout = bytes.read_with::<VarBytes>(&mut offset, byte::LE)?.1.to_vec();
         let inputs_hash = bytes.read_with::<UInt256>(&mut offset, byte::LE)?;
         let payload_signature = bytes.read_with::<UInt768>(&mut offset, byte::LE)?;
-        base.payload_offset = *offset;
+        base.payload_offset = offset;
         let mut tx = Self {
             base,
             provider_update_service_transaction_version,
@@ -221,8 +225,8 @@ impl<'a> TryRead<'a, Endian> for ProviderUpdateServiceTransaction {
             provider_registration_transaction: None
         };
         // // todo verify inputs hash
-        assert_eq!(tx.payload_data().len(), *offset, "Payload length doesn't match ");
+        assert_eq!(tx.payload_data().len(), offset, "Payload length doesn't match ");
         tx.base.tx_hash = UInt256::sha256d(&tx.to_data());
-        Ok((tx, *offset))
+        Ok((tx, offset))
     }
 }

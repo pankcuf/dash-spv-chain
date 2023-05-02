@@ -3,16 +3,18 @@ use hashes::{Hash, sha256d};
 use std::cmp::min;
 use std::collections::{BTreeMap, HashSet};
 use std::ptr::null;
+use crate::chain::chain::Chain;
 use crate::chain::common;
 use crate::consensus::{Encodable, encode};
 use crate::crypto::byte_util::{ConstDecodable, Reversable, Zeroable};
-use crate::crypto::data_ops::{Data, inplace_intersection};
+use crate::util::data_ops::{Data, inplace_intersection};
 use crate::crypto::UInt256;
 use crate::ffi::boxer::{boxed, boxed_vec};
 use crate::ffi::{callbacks, types};
 use crate::ffi::callbacks::{AddInsightBlockingLookup, GetBlockHashByHeight, GetBlockHeightByHash, GetLLMQSnapshotByBlockHash, HashDestroy, LLMQSnapshotDestroy, LogMessage, MasternodeListDestroy, MasternodeListLookup, MasternodeListSave, MerkleRootLookup, SaveLLMQSnapshot, ShouldProcessDiffWithRange, ShouldProcessLLMQTypeCallback, ValidateLLMQCallback};
 use crate::ffi::to::ToFFI;
-use crate::models;
+use crate::chain::masternode;
+use crate::chain::common::MerkleTreeHashFunction;
 use crate::processing::{MasternodeProcessorCache, MNListDiffResult, ProcessingError};
 
 // https://github.com/rust-lang/rfcs/issues/2770
@@ -90,16 +92,16 @@ impl MasternodeProcessor {
     pub(crate) fn find_masternode_list(
         &self,
         block_hash: UInt256,
-        cached_lists: &BTreeMap<UInt256, models::MasternodeList>,
+        cached_lists: &BTreeMap<UInt256, masternode::MasternodeList>,
         unknown_lists: &mut Vec<UInt256>,
-    ) -> Option<models::MasternodeList> {
+    ) -> Option<masternode::MasternodeList> {
         let genesis_hash = UInt256::from_const(self.genesis_hash).unwrap();
         if block_hash.is_zero() {
             // If it's a zero block we don't expect models list here
             None
         } else if block_hash.eq(&genesis_hash) {
             // If it's a genesis block we don't expect models list here
-            Some(models::MasternodeList::new(BTreeMap::default(), BTreeMap::default(), block_hash, self.lookup_block_height_by_hash(block_hash), false))
+            Some(masternode::MasternodeList::new(BTreeMap::default(), BTreeMap::default(), block_hash, self.lookup_block_height_by_hash(block_hash), false))
             // None
         } else if let Some(cached) = cached_lists.get(&block_hash) {
             // Getting it from local cache stored as opaque in FFI context
@@ -122,8 +124,8 @@ impl MasternodeProcessor {
     pub(crate) fn find_snapshot(
         &self,
         block_hash: UInt256,
-        cached_snapshots: &BTreeMap<UInt256, models::LLMQSnapshot>,
-    ) -> Option<models::LLMQSnapshot> {
+        cached_snapshots: &BTreeMap<UInt256, masternode::LLMQSnapshot>,
+    ) -> Option<masternode::LLMQSnapshot> {
         if let Some(cached) = cached_snapshots.get(&block_hash) {
             // Getting it from local cache stored as opaque in FFI context
             Some(cached.clone())
@@ -134,7 +136,7 @@ impl MasternodeProcessor {
 
     pub(crate) fn get_list_diff_result_with_base_lookup(
         &self,
-        list_diff: models::MNListDiff,
+        list_diff: masternode::MNListDiff,
         should_process_quorums: bool,
         cache: &mut MasternodeProcessorCache,
     ) -> types::MNListDiffResult {
@@ -149,7 +151,7 @@ impl MasternodeProcessor {
 
     pub(crate) fn get_list_diff_result_internal_with_base_lookup(
         &self,
-        list_diff: models::MNListDiff,
+        list_diff: masternode::MNListDiff,
         should_process_quorums: bool,
         cache: &mut MasternodeProcessorCache,
     ) -> MNListDiffResult {
@@ -163,8 +165,8 @@ impl MasternodeProcessor {
 
     pub(crate) fn get_list_diff_result(
         &self,
-        base_list: Option<models::MasternodeList>,
-        list_diff: models::MNListDiff,
+        base_list: Option<masternode::MasternodeList>,
+        list_diff: masternode::MNListDiff,
         should_process_quorums: bool,
         cache: &mut MasternodeProcessorCache,
     ) -> types::MNListDiffResult {
@@ -176,7 +178,7 @@ impl MasternodeProcessor {
     fn cache_masternode_list(
         &self,
         block_hash: UInt256,
-        list: models::MasternodeList,
+        list: masternode::MasternodeList,
         cache: &mut MasternodeProcessorCache,
     ) {
         // It's good to cache lists to use it inside processing session
@@ -188,8 +190,8 @@ impl MasternodeProcessor {
 
     pub(crate) fn get_list_diff_result_internal(
         &self,
-        base_list: Option<models::MasternodeList>,
-        list_diff: models::MNListDiff,
+        base_list: Option<masternode::MasternodeList>,
+        list_diff: masternode::MNListDiff,
         should_process_quorums: bool,
         cache: &mut MasternodeProcessorCache,
     ) -> MNListDiffResult {
@@ -216,7 +218,7 @@ impl MasternodeProcessor {
             should_process_quorums,
             cache,
         );
-        let masternode_list = models::MasternodeList::new(
+        let masternode_list = masternode::MasternodeList::new(
             masternodes,
             quorums,
             block_hash,
@@ -226,7 +228,8 @@ impl MasternodeProcessor {
         let merkle_tree = common::MerkleTree {
             tree_element_count: list_diff.total_transactions,
             hashes: list_diff.merkle_hashes,
-            flags: list_diff.merkle_flags.as_slice(),
+            flags: list_diff.merkle_flags,
+            hash_function: MerkleTreeHashFunction::SHA256_2
         };
         self.cache_masternode_list(block_hash, masternode_list.clone(), cache);
         let needed_masternode_lists = cache.needed_masternode_lists.clone();
@@ -254,15 +257,15 @@ impl MasternodeProcessor {
 
     pub fn classify_masternodes(
         &self,
-        base_masternodes: BTreeMap<UInt256, models::MasternodeEntry>,
-        added_or_modified_masternodes: BTreeMap<UInt256, models::MasternodeEntry>,
+        base_masternodes: BTreeMap<UInt256, masternode::MasternodeEntry>,
+        added_or_modified_masternodes: BTreeMap<UInt256, masternode::MasternodeEntry>,
         deleted_masternode_hashes: Vec<UInt256>,
         block_height: u32,
         block_hash: UInt256,
     ) -> (
-        BTreeMap<UInt256, models::MasternodeEntry>,
-        BTreeMap<UInt256, models::MasternodeEntry>,
-        BTreeMap<UInt256, models::MasternodeEntry>,
+        BTreeMap<UInt256, masternode::MasternodeEntry>,
+        BTreeMap<UInt256, masternode::MasternodeEntry>,
+        BTreeMap<UInt256, masternode::MasternodeEntry>,
     ) {
         let mut added_masternodes = added_or_modified_masternodes.clone();
         let mut modified_masternode_keys: HashSet<UInt256> = HashSet::new();
@@ -276,7 +279,7 @@ impl MasternodeProcessor {
             let mut old_mn_keys: HashSet<UInt256> = base_masternodes.keys().cloned().collect();
             modified_masternode_keys = inplace_intersection(&mut new_mn_keys, &mut old_mn_keys);
         }
-        let mut modified_masternodes: BTreeMap<UInt256, models::MasternodeEntry> =
+        let mut modified_masternodes: BTreeMap<UInt256, masternode::MasternodeEntry> =
             modified_masternode_keys
                 .into_iter()
                 .fold(BTreeMap::new(), |mut acc, hash| {
@@ -318,14 +321,14 @@ impl MasternodeProcessor {
     #[allow(clippy::type_complexity)]
     pub fn classify_quorums(
         &self,
-        base_quorums: BTreeMap<LLMQType, BTreeMap<UInt256, models::LLMQEntry>>,
-        added_quorums: BTreeMap<LLMQType, BTreeMap<UInt256, models::LLMQEntry>>,
+        base_quorums: BTreeMap<LLMQType, BTreeMap<UInt256, masternode::LLMQEntry>>,
+        added_quorums: BTreeMap<LLMQType, BTreeMap<UInt256, masternode::LLMQEntry>>,
         deleted_quorums: BTreeMap<LLMQType, Vec<UInt256>>,
         should_process_quorums: bool,
         cache: &mut MasternodeProcessorCache,
     ) -> (
-        BTreeMap<LLMQType, BTreeMap<UInt256, models::LLMQEntry>>,
-        BTreeMap<LLMQType, BTreeMap<UInt256, models::LLMQEntry>>,
+        BTreeMap<LLMQType, BTreeMap<UInt256, masternode::LLMQEntry>>,
+        BTreeMap<LLMQType, BTreeMap<UInt256, masternode::LLMQEntry>>,
         bool,
     ) {
         let has_valid_quorums = true;
@@ -334,7 +337,7 @@ impl MasternodeProcessor {
             added.iter_mut().for_each(|(&llmq_type, llmqs_of_type)| {
                 if self.should_process_quorum(llmq_type) {
                     llmqs_of_type.iter_mut().for_each(|(&llmq_block_hash, quorum)| {
-                        if let Some(models::MasternodeList { masternodes, .. }) = self
+                        if let Some(masternode::MasternodeList { masternodes, .. }) = self
                             .find_masternode_list(
                                 llmq_block_hash,
                                 &cache.mn_lists,
@@ -359,7 +362,7 @@ impl MasternodeProcessor {
                 .clone()
                 .into_iter()
                 .filter(|(key, _entries)| !quorums.contains_key(key))
-                .collect::<BTreeMap<LLMQType, BTreeMap<UInt256, models::LLMQEntry>>>(),
+                .collect::<BTreeMap<LLMQType, BTreeMap<UInt256, masternode::LLMQEntry>>>(),
         );
         quorums.iter_mut().for_each(|(llmq_type, llmq_map)| {
             if let Some(keys_to_delete) = deleted_quorums.get(llmq_type) {
@@ -378,10 +381,10 @@ impl MasternodeProcessor {
 
     pub fn validate_quorum(
         &self,
-        quorum: &mut models::LLMQEntry,
+        quorum: &mut masternode::LLMQEntry,
         has_valid_quorums: bool,
         block_hash: UInt256,
-        masternodes: BTreeMap<UInt256, models::MasternodeEntry>,
+        masternodes: BTreeMap<UInt256, masternode::MasternodeEntry>,
         cache: &mut MasternodeProcessorCache,
     ) {
         let block_height = self.lookup_block_height_by_hash(block_hash);
@@ -406,13 +409,13 @@ impl MasternodeProcessor {
         self.validate_signature(valid_masternodes, quorum, block_height, has_valid_quorums);
     }
 
-    pub fn get_masternodes_for_quorum(llmq_type: LLMQType, masternodes: BTreeMap<UInt256, models::MasternodeEntry>, quorum_modifier: UInt256, block_height: u32) -> Vec<models::MasternodeEntry> {
+    pub fn get_masternodes_for_quorum(llmq_type: LLMQType, masternodes: BTreeMap<UInt256, masternode::MasternodeEntry>, quorum_modifier: UInt256, block_height: u32) -> Vec<masternode::MasternodeEntry> {
         let quorum_count = llmq_type.size();
         let masternodes_in_list_count = masternodes.len();
         let mut score_dictionary = Self::score_masternodes_map(masternodes, quorum_modifier, block_height);
         let mut scores: Vec<UInt256> = score_dictionary.clone().into_keys().collect();
         scores.sort_by(|&s1, &s2| s2.clone().reversed().cmp(&s1.clone().reversed()));
-        let mut valid_masternodes: Vec<models::MasternodeEntry> = Vec::new();
+        let mut valid_masternodes: Vec<masternode::MasternodeEntry> = Vec::new();
         let count = min(masternodes_in_list_count, scores.len());
         for score in scores.iter().take(count) {
             if let Some(masternode) = score_dictionary.get_mut(score) {
@@ -428,34 +431,34 @@ impl MasternodeProcessor {
     }
 
     pub fn score_masternodes_map(
-        masternodes: BTreeMap<UInt256, models::MasternodeEntry>,
+        masternodes: BTreeMap<UInt256, masternode::MasternodeEntry>,
         quorum_modifier: UInt256,
         block_height: u32,
-    ) -> BTreeMap<UInt256, models::MasternodeEntry> {
+    ) -> BTreeMap<UInt256, masternode::MasternodeEntry> {
         masternodes
             .into_iter()
             .filter_map(|(_, entry)| {
-                models::MasternodeList::masternode_score(&entry, quorum_modifier, block_height).map(|score| (score, entry))
+                masternode::MasternodeList::masternode_score(&entry, quorum_modifier, block_height).map(|score| (score, entry))
             })
             .collect()
     }
 
-    fn sort_scored_masternodes(scored_masternodes: BTreeMap<UInt256, models::MasternodeEntry>) -> Vec<models::MasternodeEntry> {
+    fn sort_scored_masternodes(scored_masternodes: BTreeMap<UInt256, masternode::MasternodeEntry>) -> Vec<masternode::MasternodeEntry> {
         let mut v = Vec::from_iter(scored_masternodes);
         v.sort_by(|(s1, _), (s2, _b)| s2.clone().reversed().cmp(&s1.clone().reversed()));
         v.into_iter().map(|(s, node)| node).collect()
     }
 
     pub fn valid_masternodes_for_rotated_quorum_map(
-        masternodes: Vec<models::MasternodeEntry>,
+        masternodes: Vec<masternode::MasternodeEntry>,
         quorum_modifier: UInt256,
         quorum_count: u32,
         block_height: u32,
-    ) -> Vec<models::MasternodeEntry> {
+    ) -> Vec<masternode::MasternodeEntry> {
         let scored_masternodes = masternodes
             .into_iter()
             .fold(BTreeMap::new(), |mut map, entry| {
-                if let Some(score) = models::MasternodeList::masternode_score(&entry, quorum_modifier, block_height) {
+                if let Some(score) = masternode::MasternodeList::masternode_score(&entry, quorum_modifier, block_height) {
                     map.insert(score, entry);
                 }
                 map
@@ -464,11 +467,11 @@ impl MasternodeProcessor {
     }
 
     pub fn valid_masternodes_for_rotated_quorum(
-        masternodes: BTreeMap<UInt256, models::MasternodeEntry>,
+        masternodes: BTreeMap<UInt256, masternode::MasternodeEntry>,
         quorum_modifier: UInt256,
         quorum_count: u32,
         block_height: u32,
-    ) -> Vec<models::MasternodeEntry> {
+    ) -> Vec<masternode::MasternodeEntry> {
         let scored_masternodes = Self::score_masternodes_map(masternodes, quorum_modifier, block_height);
         Self::sort_scored_masternodes(scored_masternodes)
     }
@@ -487,10 +490,10 @@ impl MasternodeProcessor {
         &self,
         llmq_params: LLMQParams,
         quorum_base_block_height: u32,
-        cached_lists: &BTreeMap<UInt256, models::MasternodeList>,
-        cached_snapshots: &BTreeMap<UInt256, models::LLMQSnapshot>,
+        cached_lists: &BTreeMap<UInt256, masternode::MasternodeList>,
+        cached_snapshots: &BTreeMap<UInt256, masternode::LLMQSnapshot>,
         unknown_lists: &mut Vec<UInt256>,
-    ) -> Vec<Vec<models::MasternodeEntry>> {
+    ) -> Vec<Vec<masternode::MasternodeEntry>> {
         let work_block_height = quorum_base_block_height - 8;
         let llmq_type = llmq_params.r#type;
         let quorum_count = llmq_params.signing_active_quorum_count;
@@ -554,14 +557,14 @@ impl MasternodeProcessor {
         &self,
         params: LLMQParams,
         quorum_base_block_height: u32,
-        previous_quarters: [Vec<Vec<models::MasternodeEntry>>; 3],
-        cached_lists: &BTreeMap<UInt256, models::MasternodeList>,
+        previous_quarters: [Vec<Vec<masternode::MasternodeEntry>>; 3],
+        cached_lists: &BTreeMap<UInt256, masternode::MasternodeList>,
         unknown_lists: &mut Vec<UInt256>,
-    ) -> Vec<Vec<models::MasternodeEntry>> {
+    ) -> Vec<Vec<masternode::MasternodeEntry>> {
         let quorum_count = params.signing_active_quorum_count;
         let num_quorums = quorum_count as usize;
         let mut quarter_quorum_members =
-            Vec::<Vec<models::MasternodeEntry>>::with_capacity(num_quorums);
+            Vec::<Vec<masternode::MasternodeEntry>>::with_capacity(num_quorums);
         let quorum_size = params.size as usize;
         let quarter_size = quorum_size / 4;
         let work_block_height = quorum_base_block_height - 8;
@@ -575,10 +578,10 @@ impl MasternodeProcessor {
                         println!("models list at {}: {} has less masternodes ({}) then required for quarter size: ({})", work_block_height, work_block_hash, masternode_list.masternodes.len(), quarter_size);
                         quarter_quorum_members
                     } else {
-                        let mut masternodes_used_at_h = Vec::<models::MasternodeEntry>::new();
-                        let mut masternodes_unused_at_h = Vec::<models::MasternodeEntry>::new();
+                        let mut masternodes_used_at_h = Vec::<masternode::MasternodeEntry>::new();
+                        let mut masternodes_unused_at_h = Vec::<masternode::MasternodeEntry>::new();
                         let mut masternodes_used_at_h_index =
-                            Vec::<Vec<models::MasternodeEntry>>::with_capacity(num_quorums);
+                            Vec::<Vec<masternode::MasternodeEntry>>::with_capacity(num_quorums);
                         for i in 0..num_quorums {
                             masternodes_used_at_h_index.insert(i, vec![]);
                         }
@@ -666,8 +669,8 @@ impl MasternodeProcessor {
     }
 
     fn add_quorum_members_from_quarter(
-        quorum_members: &mut Vec<Vec<models::MasternodeEntry>>,
-        quarter: &[Vec<models::MasternodeEntry>],
+        quorum_members: &mut Vec<Vec<masternode::MasternodeEntry>>,
+        quarter: &[Vec<masternode::MasternodeEntry>],
         index: usize,
     ) {
         if let Some(indexed_quarter) = quarter.get(index) {
@@ -685,10 +688,10 @@ impl MasternodeProcessor {
         &self,
         cycle_quorum_base_block_height: u32,
         llmq_params: LLMQParams,
-        cached_lists: &BTreeMap<UInt256, models::MasternodeList>,
-        cached_snapshots: &BTreeMap<UInt256, models::LLMQSnapshot>,
+        cached_lists: &BTreeMap<UInt256, masternode::MasternodeList>,
+        cached_snapshots: &BTreeMap<UInt256, masternode::LLMQSnapshot>,
         unknown_lists: &mut Vec<UInt256>,
-    ) -> Vec<Vec<models::MasternodeEntry>> {
+    ) -> Vec<Vec<masternode::MasternodeEntry>> {
         let num_quorums = llmq_params.signing_active_quorum_count as usize;
         let cycle_length = llmq_params.dkg_params.interval;
         let prev_q_h_m_c = self.quorum_quarter_members_by_snapshot(
@@ -713,7 +716,7 @@ impl MasternodeProcessor {
             unknown_lists,
         );
         let mut rotated_members =
-            Vec::<Vec<models::MasternodeEntry>>::with_capacity(num_quorums);
+            Vec::<Vec<masternode::MasternodeEntry>>::with_capacity(num_quorums);
         let new_quarter_members = self.new_quorum_quarter_members(
             llmq_params,
             cycle_quorum_base_block_height,
@@ -741,12 +744,12 @@ impl MasternodeProcessor {
         llmq_type: LLMQType,
         block_hash: UInt256,
         block_height: u32,
-        cached_llmq_members: &mut BTreeMap<LLMQType, BTreeMap<UInt256, Vec<models::MasternodeEntry>>>,
-        cached_llmq_indexed_members: &mut BTreeMap<LLMQType, BTreeMap<models::LLMQIndexedHash, Vec<models::MasternodeEntry>>>,
-        cached_mn_lists: &BTreeMap<UInt256, models::MasternodeList>,
-        cached_llmq_snapshots: &BTreeMap<UInt256, models::LLMQSnapshot>,
+        cached_llmq_members: &mut BTreeMap<LLMQType, BTreeMap<UInt256, Vec<masternode::MasternodeEntry>>>,
+        cached_llmq_indexed_members: &mut BTreeMap<LLMQType, BTreeMap<masternode::LLMQIndexedHash, Vec<masternode::MasternodeEntry>>>,
+        cached_mn_lists: &BTreeMap<UInt256, masternode::MasternodeList>,
+        cached_llmq_snapshots: &BTreeMap<UInt256, masternode::LLMQSnapshot>,
         cached_needed_masternode_lists: &mut Vec<UInt256>,
-    ) -> Vec<models::MasternodeEntry> {
+    ) -> Vec<masternode::MasternodeEntry> {
         let map_by_type_opt = cached_llmq_members.get_mut(&llmq_type);
         if map_by_type_opt.is_some() {
             if let Some(members) = map_by_type_opt.as_ref().unwrap().get(&block_hash) {
@@ -767,7 +770,7 @@ impl MasternodeProcessor {
                     if let Some(members) = map_by_type_indexed_opt
                         .as_ref()
                         .unwrap()
-                        .get(&models::LLMQIndexedHash::new(cycle_base_hash, quorum_index))
+                        .get(&masternode::LLMQIndexedHash::new(cycle_base_hash, quorum_index))
                     {
                         map_by_type.insert(block_hash, members.clone());
                         return members.clone();
@@ -787,7 +790,7 @@ impl MasternodeProcessor {
                     cached_llmq_indexed_members.get_mut(&llmq_type).unwrap();
                 rotated_members.iter().enumerate().for_each(|(i, members)| {
                     map_indexed_quorum_members_of_type.insert(
-                        models::LLMQIndexedHash::new(cycle_base_hash, i as u32),
+                        masternode::LLMQIndexedHash::new(cycle_base_hash, i as u32),
                         members.clone(),
                     );
                 });
@@ -807,7 +810,7 @@ impl MasternodeProcessor {
     pub fn lookup_masternode_list(
         &self,
         block_hash: UInt256,
-    ) -> Option<models::MasternodeList> {
+    ) -> Option<masternode::MasternodeList> {
         // First look at the local cache
         callbacks::lookup_masternode_list(
             block_hash,
@@ -821,7 +824,7 @@ impl MasternodeProcessor {
     pub fn save_masternode_list(
         &self,
         block_hash: UInt256,
-        masternode_list: &models::MasternodeList,
+        masternode_list: &masternode::MasternodeList,
     ) -> bool {
         unsafe {
             (self.save_masternode_list)(
@@ -844,7 +847,7 @@ impl MasternodeProcessor {
         unsafe { (self.get_block_height_by_hash)(boxed(block_hash.0), self.opaque_context) }
     }
 
-    pub fn lookup_snapshot_by_block_hash(&self, block_hash: UInt256) -> Option<models::LLMQSnapshot> {
+    pub fn lookup_snapshot_by_block_hash(&self, block_hash: UInt256) -> Option<masternode::LLMQSnapshot> {
         callbacks::lookup_snapshot_by_block_hash(
             block_hash,
             |h: UInt256| unsafe {
@@ -854,7 +857,7 @@ impl MasternodeProcessor {
         )
     }
 
-    pub fn save_snapshot(&self, block_hash: UInt256, snapshot: models::LLMQSnapshot) -> bool {
+    pub fn save_snapshot(&self, block_hash: UInt256, snapshot: masternode::LLMQSnapshot) -> bool {
         unsafe {
             (self.save_llmq_snapshot)(
                 boxed(block_hash.0),
@@ -897,8 +900,8 @@ impl MasternodeProcessor {
     /// Calls c++ BLS lib via FFI
     fn validate_signature(
         &self,
-        valid_masternodes: Vec<models::MasternodeEntry>,
-        quorum: &mut models::LLMQEntry,
+        valid_masternodes: Vec<masternode::MasternodeEntry>,
+        quorum: &mut masternode::LLMQEntry,
         block_height: u32,
         mut has_valid_quorums: bool,
     ) {
@@ -946,8 +949,9 @@ impl MasternodeProcessor {
         &self,
         message: &'a [u8],
         offset: &mut usize,
-        is_bls_basic: bool
-    ) -> Option<models::MNListDiff> {
-        models::MNListDiff::new(message, offset, |hash| self.lookup_block_height_by_hash(hash), is_bls_basic)
+        is_bls_basic: bool,
+        chain: &Chain
+    ) -> Option<masternode::MNListDiff> {
+        masternode::MNListDiff::new(message, offset, |hash| self.lookup_block_height_by_hash(hash), is_bls_basic, chain)
     }
 }

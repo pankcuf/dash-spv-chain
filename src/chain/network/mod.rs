@@ -1,14 +1,17 @@
-pub mod peer;
 pub mod bloom_filter;
-pub mod peer_status;
-pub mod peer_type;
-pub mod message_request;
-pub mod net_address;
 pub mod governance_request_state;
 pub mod message;
+pub mod net_address;
+pub mod peer;
+pub mod peer_status;
+pub mod peer_type;
+pub mod reachability_manager;
 
-use self::peer::Peer;
-use self::peer_status::PeerStatus;
-use self::peer_type::PeerType;
-use self::bloom_filter::BloomFilter;
-use message::inv_type::InvType;
+pub use self::bloom_filter::BloomFilter;
+pub use self::governance_request_state::GovernanceRequestState;
+pub use self::message::r#type::Type;
+pub use self::message::request::{IRequest, Request};
+pub use self::message::inv_type::InvType;
+pub use self::peer::Peer;
+pub use self::peer_status::PeerStatus;
+pub use self::peer_type::PeerType;

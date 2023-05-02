@@ -25,6 +25,7 @@ use crate::storage::models::entity::Entity;
 /// (votehash) "timestamp" DESC
 ///
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[diesel(table_name = governance_votes)]
 pub struct GovernanceVoteEntity {
     pub id: i32,
     pub chain_id: i32,
@@ -43,7 +44,7 @@ pub struct GovernanceVoteEntity {
 }
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="governance_votes"]
+#[diesel(table_name = governance_votes)]
 pub struct NewGovernanceVoteEntity {
     pub chain_id: i32,
     pub masternode: i32,
@@ -62,9 +63,15 @@ pub struct NewGovernanceVoteEntity {
 }
 
 impl Entity for GovernanceVoteEntity {
-    type Type = governance_votes::dsl::governance_votes;
+    type ID = governance_votes::id;
+    // type ChainId = governance_votes::chain_id;
+
+    fn id(&self) -> i32 {
+        self.id
+    }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        governance_votes::dsl::governance_votes
+        todo!()
+        //         governance_votes::dsl::governance_votes
     }
 }

@@ -1,7 +1,9 @@
 use byte::ctx::Endian;
 use byte::{BytesExt, TryRead};
 
+#[derive(Debug, Default)]
 pub enum VoteSignal {
+    #[default]
     None = 0,
     Funding = 1,
     Valid = 2,
@@ -29,7 +31,7 @@ impl From<VoteSignal> for u32 {
             VoteSignal::Funding => 1,
             VoteSignal::Valid => 2,
             VoteSignal::Delete => 3,
-            VoteSignal::Endorsed => 3,
+            VoteSignal::Endorsed => 4,
         }
     }
 }
@@ -41,3 +43,19 @@ impl<'a> TryRead<'a, Endian> for VoteSignal {
         Ok((data, std::mem::size_of::<u32>()))
     }
 }
+
+// impl Encodable for VoteSignal {
+//     fn consensus_encode<W: Write>(&self, mut writer: W) -> Result<usize, Error> {
+//         // let s: u32 = <VoteSignal as Into<u32>>::into(self.clone());
+//         let s: u32 = match self {
+//             VoteSignal::None => 0,
+//             VoteSignal::Funding => 1,
+//             VoteSignal::Valid => 2,
+//             VoteSignal::Delete => 3,
+//             VoteSignal::Endorsed => 4
+//         };
+//         writer.emit_slice(&s.to_le_bytes())?;
+//         Ok(std::mem::size_of::<u32>())
+//
+//     }
+// }

@@ -4,10 +4,11 @@ use diesel::query_dsl::filter_dsl::FilterDsl;
 use diesel::sqlite::Sqlite;
 use crate::chain::masternode::local_masternode::LocalMasternode;
 use crate::chain::tx::transaction::ITransaction;
+use crate::chain::wallet::wallet::Wallet;
 use crate::crypto::UInt256;
 use crate::schema::{local_masternodes, transactions};
 use crate::storage::manager::managed_context::ManagedContext;
-use crate::storage::models::entity::{Entity, EntityConvertible};
+use crate::storage::models::entity::Entity;
 use crate::storage::models::masternode::MasternodeEntity;
 use crate::storage::models::tx::transaction::TransactionEntity;
 
@@ -18,6 +19,7 @@ use crate::storage::models::tx::transaction::TransactionEntity;
 
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
 // #[belongs_to(Masternode)]
+#[diesel(table_name = local_masternodes)]
 pub struct LocalMasternodeEntity {
     pub id: i32,
     pub operator_keys_index: i32,
@@ -31,13 +33,10 @@ pub struct LocalMasternodeEntity {
 
     pub masternode_id: i32,
     pub provider_registration_transaction_id: Option<i32>,
-    pub provider_update_registrar_transaction_ids: Vec<i32>,
-    pub provider_update_revocation_transaction_ids: Vec<i32>,
-    pub provider_update_service_transaction_ids: Vec<i32>,
 }
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="local_masternodes"]
+#[diesel(table_name = local_masternodes)]
 pub struct NewLocalMasternodeEntity {
     pub operator_keys_index: i32,
     pub owner_keys_index: i32,
@@ -50,21 +49,19 @@ pub struct NewLocalMasternodeEntity {
 
     pub masternode_id: i32,
     pub provider_registration_transaction_id: Option<i32>,
-    pub provider_update_registrar_transaction_ids: Vec<i32>,
-    pub provider_update_revocation_transaction_ids: Vec<i32>,
-    pub provider_update_service_transaction_ids: Vec<i32>,
 }
 
 impl Entity for LocalMasternodeEntity {
     type ID = local_masternodes::id;
-    type ChainId = None;
+    // type ChainId = ();
 
     fn id(&self) -> i32 {
         self.id
     }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        local_masternodes::dsl::local_masternodes
+        todo!()
+        //         local_masternodes::dsl::local_masternodes
     }
 }
 
@@ -77,9 +74,21 @@ impl LocalMasternodeEntity {
     }
 
     fn save_from_model(local_masternode: &LocalMasternode, pro_reg_tx_entity: &TransactionEntity, context: &ManagedContext) -> QueryResult<usize> {
-        let mut new_entity: NewLocalMasternodeEntity = local_masternode.to_entity();
+        // let mut new_entity: NewLocalMasternodeEntity = local_masternode.to_entity();
+        let mut new_entity = NewLocalMasternodeEntity {
+            operator_keys_index: local_masternode.operator_wallet_index as i32,
+            owner_keys_index: local_masternode.owner_wallet_index as i32,
+            holding_keys_index: local_masternode.holding_wallet_index as i32,
+            voting_keys_index: local_masternode.voting_wallet_index as i32,
+            operator_keys_wallet_unique_id: local_masternode.operator_keys_wallet.map_or("", Wallet::unique_id_as_str),
+            owner_keys_wallet_unique_id: local_masternode.owner_keys_wallet.map_or("", Wallet::unique_id_as_str),
+            voting_keys_wallet_unique_id: local_masternode.voting_keys_wallet.map_or("", Wallet::unique_id_as_str),
+            holding_keys_wallet_unique_id: local_masternode.holding_keys_wallet.map_or("", Wallet::unique_id_as_str),
+            ..Default::default()
+        };
+
         new_entity.provider_registration_transaction_id = Some(pro_reg_tx_entity.id);
-        /// todo: split transaction entities into different tables
+        // todo: split transaction entities into different tables
         match MasternodeEntity::get_by_pro_reg_tx_hash(&pro_reg_tx_entity.hash, context) {
             Ok(mastenode_entity) => {
                 new_entity.masternode_id = mastenode_entity.id;
@@ -87,38 +96,39 @@ impl LocalMasternodeEntity {
             Err(diesel::result::Error::NotFound) => println!("Masternode entity with pro_reg_tx_hash {} not found", pro_reg_tx_entity.hash),
             Err(err) => panic!("Error retrieving masternode entity")
         }
-
-        local_masternode.provider_update_service_transactions.iter().filter_ok(|tx| {
-            TransactionEntity::get_by_tx_hash(&pro_reg_tx_entity.hash)
-        })
+        Err(diesel::result::Error::NotFound)
+        // todo: impl
+        // local_masternode.provider_update_service_transactions.iter().filter_ok(|tx| {
+        //     TransactionEntity::get_by_tx_hash(&pro_reg_tx_entity.hash)
+        // })
 
 
         // DSProviderRegistrationTransactionEntity *providerRegistrationTransactionEntity =
         //     [DSProviderRegistrationTransactionEntity anyObjectInContext:self.managedObjectContext matching:@"transactionHash.txHash == %@", uint256_data(localMasternode.providerRegistrationTransaction.txHash)];
         // self.providerRegistrationTransaction = providerRegistrationTransactionEntity;
-        DSSimplifiedMasternodeEntryEntity *simplifiedMasternodeEntryEntity = [DSSimplifiedMasternodeEntryEntity anyObjectInContext:self.managedObjectContext matching:@"providerRegistrationTransactionHash == %@", uint256_data(localMasternode.providerRegistrationTransaction.txHash)];
-        self.simplifiedMasternodeEntry = simplifiedMasternodeEntryEntity;
-
-        for (DSProviderUpdateServiceTransaction *providerUpdateServiceTransaction in localMasternode.providerUpdateServiceTransactions) {
-            DSProviderUpdateServiceTransactionEntity *providerUpdateServiceTransactionEntity = [DSProviderUpdateServiceTransactionEntity anyObjectInContext:self.managedObjectContext matching:@"transactionHash.txHash == %@", uint256_data(providerUpdateServiceTransaction.txHash)];
-            if (![self.providerUpdateServiceTransactions containsObject:providerUpdateServiceTransactionEntity]) {
-                [self addProviderUpdateServiceTransactionsObject:providerUpdateServiceTransactionEntity];
-            }
-        }
-
-        for (DSProviderUpdateRegistrarTransaction *providerUpdateRegistrarTransaction in localMasternode.providerUpdateRegistrarTransactions) {
-            DSProviderUpdateRegistrarTransactionEntity *providerUpdateRegistrarTransactionEntity = [DSProviderUpdateRegistrarTransactionEntity anyObjectInContext:self.managedObjectContext matching:@"transactionHash.txHash == %@", uint256_data(providerUpdateRegistrarTransaction.txHash)];
-            if (![self.providerUpdateRegistrarTransactions containsObject:providerUpdateRegistrarTransactionEntity]) {
-                [self addProviderUpdateRegistrarTransactionsObject:providerUpdateRegistrarTransactionEntity];
-            }
-        }
-
-        for (DSProviderUpdateRevocationTransaction *providerUpdateRevocationTransaction in localMasternode.providerUpdateRevocationTransactions) {
-            DSProviderUpdateRevocationTransactionEntity *providerUpdateRevocationTransactionEntity = [DSProviderUpdateRevocationTransactionEntity anyObjectInContext:self.managedObjectContext matching:@"transactionHash.txHash == %@", uint256_data(providerUpdateRevocationTransaction.txHash)];
-            if (![self.providerUpdateRevocationTransactions containsObject:providerUpdateRevocationTransactionEntity]) {
-                [self addProviderUpdateRevocationTransactionsObject:providerUpdateRevocationTransactionEntity];
-            }
-        }
+        // DSSimplifiedMasternodeEntryEntity *simplifiedMasternodeEntryEntity = [DSSimplifiedMasternodeEntryEntity anyObjectInContext:self.managedObjectContext matching:@"providerRegistrationTransactionHash == %@", uint256_data(localMasternode.providerRegistrationTransaction.txHash)];
+        // self.simplifiedMasternodeEntry = simplifiedMasternodeEntryEntity;
+        //
+        // for (DSProviderUpdateServiceTransaction *providerUpdateServiceTransaction in localMasternode.providerUpdateServiceTransactions) {
+        //     DSProviderUpdateServiceTransactionEntity *providerUpdateServiceTransactionEntity = [DSProviderUpdateServiceTransactionEntity anyObjectInContext:self.managedObjectContext matching:@"transactionHash.txHash == %@", uint256_data(providerUpdateServiceTransaction.txHash)];
+        //     if (![self.providerUpdateServiceTransactions containsObject:providerUpdateServiceTransactionEntity]) {
+        //         [self addProviderUpdateServiceTransactionsObject:providerUpdateServiceTransactionEntity];
+        //     }
+        // }
+        //
+        // for (DSProviderUpdateRegistrarTransaction *providerUpdateRegistrarTransaction in localMasternode.providerUpdateRegistrarTransactions) {
+        //     DSProviderUpdateRegistrarTransactionEntity *providerUpdateRegistrarTransactionEntity = [DSProviderUpdateRegistrarTransactionEntity anyObjectInContext:self.managedObjectContext matching:@"transactionHash.txHash == %@", uint256_data(providerUpdateRegistrarTransaction.txHash)];
+        //     if (![self.providerUpdateRegistrarTransactions containsObject:providerUpdateRegistrarTransactionEntity]) {
+        //         [self addProviderUpdateRegistrarTransactionsObject:providerUpdateRegistrarTransactionEntity];
+        //     }
+        // }
+        //
+        // for (DSProviderUpdateRevocationTransaction *providerUpdateRevocationTransaction in localMasternode.providerUpdateRevocationTransactions) {
+        //     DSProviderUpdateRevocationTransactionEntity *providerUpdateRevocationTransactionEntity = [DSProviderUpdateRevocationTransactionEntity anyObjectInContext:self.managedObjectContext matching:@"transactionHash.txHash == %@", uint256_data(providerUpdateRevocationTransaction.txHash)];
+        //     if (![self.providerUpdateRevocationTransactions containsObject:providerUpdateRevocationTransactionEntity]) {
+        //         [self addProviderUpdateRevocationTransactionsObject:providerUpdateRevocationTransactionEntity];
+        //     }
+        // }
 
     }
 

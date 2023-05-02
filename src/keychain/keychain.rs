@@ -6,6 +6,7 @@ pub trait IKeychainObject<T> {
     fn to_keychain_data(&self) -> &[u8];
 }
 
+#[derive(Debug, Default)]
 pub struct Keychain {
 
 }
@@ -57,7 +58,7 @@ impl Keychain {
         todo!("Implement bindings for keychain")
     }
 
-    pub fn get_dict<K, V>(key: String, classes: Vec<String>) -> Result<HashMap<K, V>, KeychainError> {
+    pub fn get_dict<K, V>(key: String) -> Result<HashMap<K, V>, KeychainError> {
         todo!("Implement bindings for keychain")
     }
 
@@ -77,12 +78,21 @@ impl Keychain {
         todo!("Implement bindings for keychain")
     }
 
-    pub fn set_object<T>(object: Box<dyn IKeychainObject<T>>, key: String, authenticated: bool) -> Result<bool, KeychainError> {
+    // pub fn set_object<T>(object: Box<dyn IKeychainObject<T>>, key: String, authenticated: bool) -> Result<bool, KeychainError> {
+    //     todo!("Implement bindings for keychain")
+    // }
+    //
+    // pub fn get_object<T>(key: String) -> Result<dyn IKeychainObject<T>, KeychainError> {
+    //     todo!("Implement bindings for keychain")
+    // }
+
+    pub fn set_json(dict: serde_json::Value, key: String, authenticated: bool) -> Result<bool, KeychainError> {
         todo!("Implement bindings for keychain")
     }
 
-    pub fn get_object<T>(key: String) -> Result<dyn IKeychainObject<T>, KeychainError> {
+    pub fn get_json(key: String) -> Result<serde_json::Value, KeychainError> {
         todo!("Implement bindings for keychain")
     }
+
+
 }
-

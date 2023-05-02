@@ -1,7 +1,6 @@
-use core::panicking::panic;
 use std::time::SystemTime;
 use chrono::NaiveDateTime;
-use diesel::{QueryResult, QuerySource, Table};
+use diesel::{ExpressionMethods, QueryResult, QuerySource, Table};
 use diesel::query_builder::{AsChangeset, QueryFragment};
 use diesel::sqlite::Sqlite;
 use crate::crypto::byte_util::Random;
@@ -10,6 +9,7 @@ use crate::schema::users;
 use crate::storage::manager::managed_context::ManagedContext;
 use crate::storage::models::account::friend_request::{FriendRequestAggregate, FriendRequestEntity, FriendshipAggregate};
 use crate::storage::models::account::identity::IdentityEntity;
+use crate::storage::models::account::identity_username::IdentityUsernameEntity;
 use crate::storage::models::entity::{Entity, EntityUpdates};
 use crate::util::time::TimeUtil;
 
@@ -17,6 +17,7 @@ use crate::util::time::TimeUtil;
 /// "associatedBlockchainIdentity.uniqueID == %@"
 /// "associatedBlockchainIdentity.uniqueID IN %@"
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[diesel(table_name = users)]
 pub struct UserEntity {
     pub id: i32,
     pub chain_id: i32,
@@ -43,7 +44,7 @@ pub struct UserEntity {
 }
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="users"]
+#[diesel(table_name = users)]
 pub struct NewUserEntity {
     pub chain_id: i32,
     pub identity_id: i32,
@@ -65,14 +66,15 @@ pub struct NewUserEntity {
 
 impl Entity for UserEntity {
     type ID = users::id;
-    type ChainId = users::chain_id;
+    // type ChainId = users::chain_id;
 
     fn id(&self) -> i32 {
         self.id
     }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        users::dsl::users
+        todo!()
+        //        users::dsl::users
     }
 }
 
@@ -85,9 +87,16 @@ impl UserEntity {
         Self::any(users::id.eq(user_id), context)
     }
 
+    pub fn get_user_and_its_identity_username(unique_id: &UInt256, context: &ManagedContext) -> QueryResult<(Self, IdentityUsernameEntity)> {
+        IdentityEntity::identity_with_unique_id(unique_id, context)
+            .and_then(|identity| Self::any(users::identity_id.eq(identity.id), context)
+                .and_then(|entity| IdentityUsernameEntity::usernames_with_identity_id(identity.id, context)
+                    .map(|usernames| (entity, usernames.first().map(|n| *n).unwrap()))))
+    }
+
     pub fn get_by_identity_unique_id(unique_id: &UInt256, context: &ManagedContext) -> QueryResult<Self> {
         IdentityEntity::identity_with_unique_id(unique_id, context)
-            .and_then(|identity| Self::any(users::identities::id.eq(identity.id), context))
+            .and_then(|identity| Self::any(users::identity_id.eq(identity.id), context))
     }
 
     fn get_internals(requests: Vec<FriendRequestEntity>, source_identity_unique_id: &UInt256, context: &ManagedContext) -> QueryResult<Vec<FriendshipAggregate>> {
@@ -181,17 +190,17 @@ impl UserEntity {
     }
 
     pub fn update_with_display_name(&self, display_name: String, context: &ManagedContext) -> QueryResult<usize> {
-        let mut values = (users::display_name.eq(display_name));
+        let mut values = users::display_name.eq(display_name);
         self.update_with(values, context)
     }
 
     pub fn update_with_public_message(&self, public_message: String, context: &ManagedContext) -> QueryResult<usize> {
-        let mut values = (users::public_message.eq(public_message));
+        let mut values = users::public_message.eq(public_message);
         self.update_with(values, context)
     }
 
     pub fn update_with_public_avatar_url(&self, avatar_path: String, context: &ManagedContext) -> QueryResult<usize> {
-        let mut values = (users::avatar_path.eq(avatar_path));
+        let mut values = users::avatar_path.eq(avatar_path);
         self.update_with(values, context)
     }
 
@@ -232,15 +241,15 @@ impl UserEntity {
         self.update_with(values, context)
     }
     pub fn update_remote_profile_revision(&self, revision: i32, context: &ManagedContext) -> QueryResult<usize> {
-        let values = (users::remote_profile_document_revision.eq(revision));
-        Self::update(ID.eq(self.id), &values, context)
+        let values = users::remote_profile_document_revision.eq(revision);
+        Self::update(users::id.eq(self.id), &values, context)
     }
 
     pub fn update_revision(&self, context: &ManagedContext) -> QueryResult<i32> {
         if self.local_profile_document_revision > self.remote_profile_document_revision {
             let new_revision = self.remote_profile_document_revision + 1;
-            let values = (users::local_profile_document_revision.eq(new_revision));
-            match Self::update(ID.eq(self.id), &values, context) {
+            let values = users::local_profile_document_revision.eq(new_revision);
+            match Self::update(users::id.eq(self.id), &values, context) {
                 Ok(usize) => Ok(new_revision),
                 Err(err) => Err(err)
             }
@@ -261,6 +270,6 @@ impl UserEntity {
                 values.append(users::original_entropy_data.eq(UInt256::random()));
             }
         }
-        Self::update(ID.eq(self.id), &values, context)
+        Self::update(users::id.eq(self.id), &values, context)
     }
 }

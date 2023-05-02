@@ -3,6 +3,7 @@ use crate::crypto::UInt256;
 use crate::keys::key::IKey;
 use crate::storage::models::account::user::UserEntity;
 
+#[derive(Debug, Default)]
 pub struct PotentialContact {
     pub username: String,
     pub display_name: String,
@@ -10,9 +11,14 @@ pub struct PotentialContact {
     pub public_message: String,
     pub associated_identity_unique_id: UInt256,
 
-    key_dictionary: HashMap<u32, dyn IKey>,
-
+    key_dictionary: HashMap<u32, &'static dyn IKey>,
 }
+
+// impl Default for PotentialContact {
+//     fn default() -> Self {
+//         Self { }
+//     }
+// }
 
 impl PotentialContact {
     pub fn init_with_username(username: String) -> Self {
@@ -29,8 +35,6 @@ impl PotentialContact {
             username,
             avatar_path,
             public_message,
-            associated_identity_unique_id: UInt256::MIN,
-            key_dictionary: HashMap::new(),
             ..Default::default()
         }
     }
@@ -59,7 +63,7 @@ impl PotentialContact {
     }
 
     pub fn public_key_at_index(&self, index: u32) -> Option<&dyn IKey> {
-        self.key_dictionary.get(&index)
+        self.key_dictionary.get(&index).copied()
     }
 
 }

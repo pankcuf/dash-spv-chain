@@ -1,5 +1,5 @@
-use crate::UInt256;
 use crate::chain::common;
+use crate::crypto::UInt256;
 
 #[derive(Debug, Copy, Clone)]
 pub struct LLMQTypedHash {

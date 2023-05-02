@@ -5,3 +5,5 @@ pub mod identities;
 pub mod invitations;
 pub mod wallets;
 pub mod store;
+pub mod derivation;
+pub mod settings;

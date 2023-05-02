@@ -1,7 +1,6 @@
 use crate::crypto::UInt256;
 use crate::chain::tx::transaction::ITransaction;
 use crate::chain::chain::Chain;
-use crate::derivation::derivation_path::IDerivationPath;
 use crate::chain::wallet::account::Account;
 use crate::chain::wallet::wallet::Wallet;
 
@@ -10,8 +9,8 @@ pub trait Accounts {
     fn first_account_with_balance(&self) -> Option<&Account>;
     fn first_account_that_can_contain_transaction(&self, transaction: &dyn ITransaction) -> Option<&Account>;
     fn accounts_that_can_contain_transaction(&self, transaction: &dyn ITransaction) -> Vec<&Account>;
-    fn account_containing_address(&self, address: Option<String>) -> Option<&Account>;
-    fn account_containing_dashpay_external_derivation_path_address(&self, address: Option<String>) -> Option<&Account>;
+    fn account_containing_address(&self, address: &String) -> Option<&Account>;
+    fn account_containing_dashpay_external_derivation_path_address(&self, address: &String) -> Option<&Account>;
     fn first_account_for_transaction_hash(&self, tx_hash: &UInt256) -> Option<(&Wallet, &Account, &dyn ITransaction)>;
     fn accounts_for_transaction_hash(&self, tx_hash: &UInt256) -> Option<(Vec<&Account>, &dyn ITransaction)>;
 }
@@ -48,13 +47,13 @@ impl Accounts for Chain {
             })
     }
 
-    fn account_containing_address(&self, address: Option<String>) -> Option<&Account> {
+    fn account_containing_address(&self, address: &String) -> Option<&Account> {
         self.wallets
             .iter()
             .find_map(|wallet| wallet.account_for_address(address))
     }
 
-    fn account_containing_dashpay_external_derivation_path_address(&self, address: Option<String>) -> Option<&Account> {
+    fn account_containing_dashpay_external_derivation_path_address(&self, address: &String) -> Option<&Account> {
         self.wallets
             .iter()
             .find_map(|wallet| wallet.account_for_dashpay_external_derivation_path_address(address))

@@ -1,7 +1,9 @@
 use byte::ctx::Endian;
 use byte::{BytesExt, TryRead};
 
+#[derive(Debug, Default)]
 pub enum VoteOutcome {
+    #[default]
     None = 0,
     Yes = 1,
     No = 2,
@@ -38,3 +40,11 @@ impl<'a> TryRead<'a, Endian> for VoteOutcome {
         Ok((data, std::mem::size_of::<u32>()))
     }
 }
+
+// impl Encodable for VoteOutcome {
+//     fn consensus_encode<W: Write>(&self, mut writer: W) -> Result<usize, Error> {
+//         let s: u32 = *self.into();
+//         s.enc(&mut writer);
+//         Ok(std::mem::size_of::<u32>())
+//     }
+// }

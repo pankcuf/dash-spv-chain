@@ -1,13 +1,11 @@
-use bitcoin_hashes::hex::FromHex;
+use hashes::hex::FromHex;
 use crate::chain::common::chain_type::DevnetType;
 use crate::chain::common::ChainType;
-use crate::crypto::byte_util::{BytesDecodable, Reversable};
+use crate::crypto::byte_util::Reversable;
 use crate::crypto::UInt256;
-use crate::util::base58;
-use crate::chain::chain::Chain;
 
-const DUFFS: u64 = 100000000;
-const MAX_MONEY: u64 = 21000000 * DUFFS;
+pub const DUFFS: u64 = 100000000;
+pub const MAX_MONEY: u64 = 21000000 * DUFFS;
 /// standard tx fee per b of tx size
 pub const TX_FEE_PER_B: u64 = 1;
 /// standard ix fee per input
@@ -17,7 +15,7 @@ pub const TX_OUTPUT_SIZE: u64 = 34;
 /// estimated size for a typical compact pubkey transaction input
 pub const TX_INPUT_SIZE: u64 = 148;
 /// no txout can be below this amount
-pub const TX_MIN_OUTPUT_AMOUNT: u64 = (TX_FEE_PER_B * 3 * (TX_OUTPUT_SIZE + TX_INPUT_SIZE));
+pub const TX_MIN_OUTPUT_AMOUNT: u64 = TX_FEE_PER_B * 3 * (TX_OUTPUT_SIZE + TX_INPUT_SIZE);
 /// no tx can be larger than this size in bytes
 pub const TX_MAX_SIZE: u64 = 100000;
 /// block height indicating transaction is unconfirmed
@@ -50,12 +48,61 @@ pub const BITCOIN_PRIVKEY_TEST: u8 = 239;
 // pub const BIP38_LOTSEQUENCE_FLAG 0x04
 // pub const BIP38_INVALID_FLAG (0x10 | 0x08 | 0x02 | 0x01)
 
+pub const BIP32_SEED_KEY: &str = "Bitcoin seed";
+
+#[derive(Debug, Default)]
+pub struct ScriptMap {
+    // DASH_PRIVKEY | DASH_PRIVKEY_TEST
+    pub privkey: u8,
+    // DASH_PUBKEY_ADDRESS | DASH_PUBKEY_ADDRESS_TEST
+    pub pubkey: u8,
+    // DASH_SCRIPT_ADDRESS | DASH_SCRIPT_ADDRESS_TEST
+    pub script: u8,
+}
+
+impl ScriptMap {
+    pub const MAINNET: ScriptMap = ScriptMap {
+        privkey: DASH_PRIVKEY,
+        pubkey: DASH_PUBKEY_ADDRESS,
+        script: DASH_SCRIPT_ADDRESS
+    };
+    pub const TESTNET: ScriptMap = ScriptMap {
+        privkey: DASH_PRIVKEY_TEST,
+        pubkey: DASH_PUBKEY_ADDRESS_TEST,
+        script: DASH_SCRIPT_ADDRESS_TEST
+    };
+}
+
+#[derive(Debug, Default)]
+pub struct BIP32ScriptMap {
+    pub xprv: &'static [u8],
+    pub xpub: &'static [u8],
+}
+
+impl BIP32ScriptMap {
+    pub const MAINNET: BIP32ScriptMap = BIP32ScriptMap { xprv: b"\x04\x88\xAD\xE4", xpub: b"\x04\x88\xB2\x1E" };
+    pub const TESTNET: BIP32ScriptMap = BIP32ScriptMap { xprv: b"\x04\x35\x83\x94", xpub: b"\x04\x35\x87\xCF" };
+}
+
+#[derive(Debug, Default)]
+pub struct DIP14ScriptMap {
+    pub dps: &'static [u8],
+    pub dpp: &'static [u8],
+}
+
+impl DIP14ScriptMap {
+    pub const MAINNET: DIP14ScriptMap = DIP14ScriptMap { dps: b"\x0E\xEC\xF0\x2E", dpp: b"\x0E\xEC\xEF\xC5" };
+    pub const TESTNET: DIP14ScriptMap = DIP14ScriptMap { dps: b"\x0E\xED\x27\x74", dpp: b"\x0E\xED\x27\x0B" };
+}
+
+#[derive(Debug, Default)]
 pub struct SporkParams {
     pub public_key_hex_string: Option<&'static str>,
     pub private_key_base58_string: Option<&'static str>,
     pub address: &'static str,
 }
 
+#[derive(Debug, Default)]
 pub struct Params {
     pub chain_type: ChainType,
     /// Mining and Dark Gravity Wave Parameters
@@ -95,6 +142,9 @@ pub struct Params {
     pub dashpay_contract_id: UInt256,
     pub minimum_difficulty_blocks: u32,
     pub standard_dapi_jrpc_port: u32,
+    pub script_map: ScriptMap,
+    pub bip32_script_map: BIP32ScriptMap,
+    pub dip14_script_map: DIP14ScriptMap,
 }
 
 pub const MAINNET_PARAMS: Params = Params {
@@ -123,6 +173,9 @@ pub const MAINNET_PARAMS: Params = Params {
     dashpay_contract_id: UInt256::MIN,
     minimum_difficulty_blocks: 0,
     standard_dapi_jrpc_port: 3000,
+    script_map: ScriptMap::MAINNET,
+    bip32_script_map: BIP32ScriptMap::MAINNET,
+    dip14_script_map: DIP14ScriptMap::MAINNET
 };
 
 pub const TESTNET_PARAMS: Params = Params {
@@ -147,10 +200,13 @@ pub const TESTNET_PARAMS: Params = Params {
     is_evolution_enabled: false,
     fee_per_byte: DEFAULT_FEE_PER_B,
     platform_protocol_version: 1,
-    dpns_contract_id: UInt256::from_bytes(&(base58::from("GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec").unwrap())).unwrap(),
-    dashpay_contract_id: UInt256::from_bytes(&(base58::from("Bwr4WHCPz5rFVAD87RqTs3izo4zpzwsEdKPWUT1NS1C7").unwrap())).unwrap(),
+    dpns_contract_id: UInt256::from_base58_string("GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec").unwrap(),
+    dashpay_contract_id: UInt256::from_base58_string("Bwr4WHCPz5rFVAD87RqTs3izo4zpzwsEdKPWUT1NS1C7").unwrap(),
     minimum_difficulty_blocks: 0,
     standard_dapi_jrpc_port: 3000,
+    script_map: ScriptMap::TESTNET,
+    bip32_script_map: BIP32ScriptMap::TESTNET,
+    dip14_script_map: DIP14ScriptMap::TESTNET
 };
 
 pub fn create_devnet_params_for_type(r#type: DevnetType) -> Params {
@@ -192,6 +248,9 @@ pub fn create_devnet_params_for_type(r#type: DevnetType) -> Params {
             DevnetType::JackDaniels => 4032
         },
         standard_dapi_jrpc_port: 3000,
+        script_map: ScriptMap::TESTNET,
+        bip32_script_map: BIP32ScriptMap::TESTNET,
+        dip14_script_map: DIP14ScriptMap::TESTNET
     }
 }
 

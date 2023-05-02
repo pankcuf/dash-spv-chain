@@ -1,13 +1,13 @@
 use byte::BytesExt;
 use hashes::hex::ToHex;
 use std::collections::BTreeMap;
+use crate::chain::chain::Chain;
 use crate::chain::common::LLMQType;
+use crate::chain::masternode::{LLMQEntry, MasternodeEntry};
+use crate::chain::tx::CoinbaseTransaction;
 use crate::consensus::encode::VarInt;
 use crate::crypto::byte_util::{BytesDecodable, Reversable};
-use crate::crypto::var_array::VarArray;
-use crate::crypto::UInt256;
-use crate::models::{LLMQEntry, MasternodeEntry};
-use crate::tx::CoinbaseTransaction;
+use crate::crypto::{UInt256, VarArray};
 
 #[derive(Clone)]
 pub struct MNListDiff {
@@ -59,6 +59,7 @@ impl MNListDiff {
         offset: &mut usize,
         block_height_lookup: F,
         is_bls_basic: bool,
+        chain: &Chain
     ) -> Option<Self> {
         let base_block_hash = UInt256::from_bytes(message, offset)?;
         let block_hash = UInt256::from_bytes(message, offset)?;
@@ -71,7 +72,8 @@ impl MNListDiff {
             Ok(data) => data,
             Err(_err) => { return None; },
         };
-        let coinbase_transaction = CoinbaseTransaction::from_bytes(message, offset)?;
+        let coinbase_transaction = message.read_with::<CoinbaseTransaction>(offset, chain).ok()?;
+        // let coinbase_transaction = CoinbaseTransaction::from_bytes(message, offset)?;
         let version = if is_bls_basic {
             u16::from_bytes(message, offset)?
         } else {

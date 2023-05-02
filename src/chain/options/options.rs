@@ -1,6 +1,7 @@
 use crate::chain::options::sync_type::SyncType;
 use crate::user_defaults::UserDefaults;
 
+#[derive(Debug)]
 pub struct Options {
     pub keep_headers: bool,
     pub use_checkpoint_masternode_lists: bool,
@@ -39,7 +40,7 @@ impl Options {
         if sync_from_genesis {
             self.sync_from_height = 0;
             self.should_sync_from_height = true;
-        } else if let Some(sync_from_height) = UserDefaults::object_for_key("syncFromHeight") {
+        } else if let Some(sync_from_height) = UserDefaults::object_for_key::<u32>("syncFromHeight") {
             if self.sync_from_height == 0 {
                 UserDefaults::remove_object_for_key("syncFromHeight");
                 self.should_sync_from_height = false;
@@ -55,11 +56,7 @@ impl Options {
     }
 
     pub fn sync_from_genesis(&self) -> bool {
-        if let Some(syncFromHeight) = UserDefaults::object_for_key("syncFromHeight") {
-            self.sync_from_height == 0 && self.should_sync_from_height
-        } else {
-            false
-        }
+        UserDefaults::object_for_key::<u32>("syncFromHeight").map_or(false, self.sync_from_height == 0 && self.should_sync_from_height)
 
     }
 

@@ -1,7 +1,7 @@
 use diesel::connection::SimpleConnection;
 use diesel::SqliteConnection;
 use diesel::r2d2::{ConnectionManager, Error};
-use r2d2::{Pool, PooledConnection};
+use r2d2::Pool;
 
 #[derive(Debug)]
 pub struct ConnectionOptions {

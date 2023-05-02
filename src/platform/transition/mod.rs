@@ -5,4 +5,4 @@ pub mod document_transition_type;
 pub mod contract_transition;
 pub mod identity_registration_transition;
 
-use self::r#type::Type;
+pub use self::r#type::Type;

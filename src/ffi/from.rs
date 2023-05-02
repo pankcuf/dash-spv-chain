@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::slice;
-use crate::{encode, models, tx, types};
-use crate::chain::common;
+use crate::chain::{common, masternode, tx};
+use crate::consensus::encode;
 use crate::crypto::{UInt128, UInt160, UInt256, UInt384, UInt768};
 use crate::crypto::byte_util::Reversable;
 use crate::ffi::to::ToFFI;
-use crate::tx::transaction;
+use crate::ffi::types;
 
 pub trait FromFFI {
     type Item: ToFFI;
@@ -14,7 +14,7 @@ pub trait FromFFI {
 }
 
 impl FromFFI for types::TransactionInput {
-    type Item = transaction::TransactionInput;
+    type Item = tx::TransactionInput;
 
     unsafe fn decode(&self) -> Self::Item {
         Self::Item {
@@ -36,7 +36,7 @@ impl FromFFI for types::TransactionInput {
 }
 
 impl FromFFI for types::TransactionOutput {
-    type Item = transaction::TransactionOutput;
+    type Item = tx::TransactionOutput;
 
     unsafe fn decode(&self) -> Self::Item {
         Self::Item {
@@ -49,7 +49,9 @@ impl FromFFI for types::TransactionOutput {
             address: if self.address.is_null() || self.address_length == 0 {
                 None
             } else {
-                Some(slice::from_raw_parts(self.address, self.address_length).to_vec())
+                // todo: check from string
+                Some(String::from_raw_parts(self.address, self.address_length, self.address_length))
+                // Some(slice::from_raw_parts(self.address, self.address_length).to_vec())
             },
         }
     }
@@ -71,13 +73,15 @@ impl FromFFI for types::Transaction {
             lock_time: self.lock_time,
             version: self.version,
             tx_hash: if self.tx_hash.is_null() {
-                None
+                UInt256::MIN
             } else {
-                Some(UInt256(*self.tx_hash))
+                UInt256(*self.tx_hash)
             },
             tx_type: self.tx_type,
             payload_offset: self.payload_offset,
             block_height: self.block_height,
+            // todo: impl remaining bindings
+            ..Default::default()
         }
     }
 }
@@ -96,12 +100,13 @@ impl FromFFI for types::CoinbaseTransaction {
             } else {
                 Some(UInt256(*self.merkle_root_llmq_list))
             },
+            locked_amount: self.locked_amount
         }
     }
 }
 
 impl FromFFI for types::MasternodeList {
-    type Item = models::MasternodeList;
+    type Item = masternode::MasternodeList;
 
     unsafe fn decode(&self) -> Self::Item {
         Self::Item {
@@ -134,7 +139,7 @@ impl FromFFI for types::MasternodeList {
                 |mut acc, i| {
                     let llmq_map = *(*self.llmq_type_maps.add(i));
                     let key = common::LLMQType::from(llmq_map.llmq_type);
-                    let value: BTreeMap<UInt256, models::LLMQEntry> = (0..llmq_map.count)
+                    let value: BTreeMap<UInt256, masternode::LLMQEntry> = (0..llmq_map.count)
                         .into_iter()
                         .fold(BTreeMap::new(), |mut acc, j| {
                             let raw_value = *(*llmq_map.values.add(j));
@@ -152,7 +157,7 @@ impl FromFFI for types::MasternodeList {
 }
 
 impl FromFFI for types::OperatorPublicKey {
-    type Item = models::OperatorPublicKey;
+    type Item = masternode::OperatorPublicKey;
     unsafe fn decode(&self) -> Self::Item {
         Self::Item {
             data: UInt384(self.data),
@@ -162,7 +167,7 @@ impl FromFFI for types::OperatorPublicKey {
 }
 
 impl FromFFI for types::MasternodeEntry {
-    type Item = models::MasternodeEntry;
+    type Item = masternode::MasternodeEntry;
     unsafe fn decode(&self) -> Self::Item {
         Self::Item {
             provider_registration_transaction_hash: UInt256(
@@ -192,7 +197,7 @@ impl FromFFI for types::MasternodeEntry {
                         height: obj.block_height,
                         hash: UInt256(obj.block_hash),
                     };
-                    let value = models::OperatorPublicKey {
+                    let value = masternode::OperatorPublicKey {
                         data: UInt384(obj.key),
                         version: obj.version
                     };
@@ -234,12 +239,14 @@ impl FromFFI for types::MasternodeEntry {
             key_id_voting: UInt160(*self.key_id_voting),
             is_valid: self.is_valid,
             entry_hash: UInt256(*self.entry_hash),
+            platform_ping: 0,
+            platform_ping_date: 0
         }
     }
 }
 
 impl FromFFI for types::LLMQEntry {
-    type Item = models::LLMQEntry;
+    type Item = masternode::LLMQEntry;
 
     unsafe fn decode(&self) -> Self::Item {
         let signers_bitset =
@@ -276,7 +283,7 @@ impl FromFFI for types::LLMQEntry {
 }
 
 impl FromFFI for types::LLMQSnapshot {
-    type Item = models::LLMQSnapshot;
+    type Item = masternode::LLMQSnapshot;
 
     unsafe fn decode(&self) -> Self::Item {
         Self::Item {

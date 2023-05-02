@@ -1,5 +1,6 @@
-use bitcoin_hashes::hex::FromHex;
+use hashes::hex::FromHex;
 use crate::chain::common::chain_type::DevnetType;
+use crate::chain::params::ScriptMap;
 use crate::chain::tx::Transaction;
 use crate::crypto::byte_util::Reversable;
 use crate::crypto::UInt256;
@@ -7,6 +8,7 @@ use crate::crypto::UInt256;
 /// blockchain checkpoints - these are also used as starting points for partial chain downloads,
 /// so they need to be at difficulty transition boundaries in order to verify the block
 /// difficulty at the immediately following transition
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Checkpoint {
     pub height: u32,
     pub hash: UInt256,
@@ -19,14 +21,18 @@ pub struct Checkpoint {
 
 impl Checkpoint {
     pub fn new(height: u32, hash: &str, timestamp: u32, target: u32, masternode_list_path: &str, merkle_root: &str, chain_work: &str) -> Self {
+        Self::checkpoint_for_height(height, UInt256::from_hex(hash).unwrap(), timestamp, target, masternode_list_path.to_string(), UInt256::from_hex(merkle_root).unwrap(), UInt256::from_hex(chain_work).unwrap())
+    }
+
+    pub fn checkpoint_for_height(height: u32, hash: UInt256, timestamp: u32, target: u32, masternode_list_path: String, merkle_root: UInt256, chain_work: UInt256) -> Self {
         Self {
             height,
-            hash: UInt256::from_hex(hash).unwrap(),
+            hash,
             timestamp,
             target,
-            masternode_list_path: masternode_list_path.to_string(),
-            merkle_root: UInt256::from_hex(merkle_root).unwrap(),
-            chain_work: UInt256::from_hex(chain_work).unwrap()
+            masternode_list_path,
+            merkle_root,
+            chain_work
         }
     }
 
@@ -45,41 +51,25 @@ impl Checkpoint {
     pub fn create_dev_net_genesis_block_checkpoint_for_parent_checkpoint(
         checkpoint: Checkpoint,
         r#type: DevnetType,
+        base_reward: u64,
+        script_address: &ScriptMap,
         protocol_version: u32) -> Self {
         let version = r#type.version();
         let identifier = r#type.identifier();
-        let nTime: u32 = checkpoint.timestamp + 1;
-        let nBits: u32 = checkpoint.target;
-        let fullTarget: UInt256 = setCompactLE(nBits);
+        let timestamp = checkpoint.timestamp + 1;
+        let target = checkpoint.target;
+        let full_target = UInt256::set_compact_le(target as i32);
         let nVersion: u32 = 4;
-        let prevHash = checkpoint.hash;
-        let merkle_root = Transaction::devnet_genesis_coinbase_with_identifier(identifier, version, protocol_version,)
-        UInt256 merkleRoot = [DSTransaction devnetGenesisCoinbaseWithIdentifier:identifier version:version onProtocolVersion:protocolVersion forChain:self].txHash;
-        let chainWork = UInt256::from_hex("0400000000000000000000000000000000000000000000000000000000000000").unwrap();
-        let nonce = u32::MAX; //+1 => 0;
-        let block_hash: UInt256;
-
-        while  {
-
+        let prev_hash = checkpoint.hash;
+        let merkle_root = Transaction::devnet_genesis_coinbase_with_identifier(identifier, version, protocol_version, base_reward, script_address);
+        let chain_work = UInt256::from_hex("0400000000000000000000000000000000000000000000000000000000000000").unwrap();
+        let mut nonce = 0;
+        let mut block_hash = UInt256::block_hash_for_dev_net_genesis_block_with_version(nVersion, prev_hash, merkle_root, timestamp, target, nonce);
+        while nonce < u32::MAX && block_hash > full_target {
+            nonce += 1;
+            block_hash = UInt256::block_hash_for_dev_net_genesis_block_with_version(nVersion, prev_hash, merkle_root, timestamp, target, nonce);
         }
-
-        do {
-            nonce++; //should start at 0;
-            blockhash = [self blockHashForDevNetGenesisBlockWithVersion:nVersion prevHash:prevHash merkleRoot:merkleRoot timestamp:nTime target:nBits nonce:nonce];
-        } while (nonce < UINT32_MAX && uint256_sup(blockhash, fullTarget));
-        DSCheckpoint *block2Checkpoint = [DSCheckpoint checkpointForHeight:1 blockHash:blockhash timestamp:nTime target:nBits merkleRoot:merkleRoot chainWork:chainWork masternodeListName:nil];
-
-
-        Checkpoint {
-            height: 1,
-            hash: block_hash,
-            timestamp: nTime,
-            target: nBits,
-            masternode_list_path: "".to_string(),
-            merkle_root: Default::default(),
-            chain_work: Default::default()
-        }
-
+        Checkpoint::checkpoint_for_height(1, block_hash, timestamp, target, Default::default(), merkle_root, chain_work)
     }
 }
 

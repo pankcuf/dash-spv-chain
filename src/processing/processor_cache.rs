@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
-use crate::{models, UInt256};
-use crate::chain::common;
+use crate::chain::{common, masternode};
+use crate::crypto::UInt256;
 
 #[derive(Clone, Default)]
 pub struct MasternodeProcessorCache {
-    pub llmq_members: BTreeMap<common::LLMQType, BTreeMap<UInt256, Vec<models::MasternodeEntry>>>,
-    pub llmq_indexed_members: BTreeMap<common::LLMQType, BTreeMap<models::LLMQIndexedHash, Vec<models::MasternodeEntry>>>,
-    pub mn_lists: BTreeMap<UInt256, models::MasternodeList>,
-    pub llmq_snapshots: BTreeMap<UInt256, models::LLMQSnapshot>,
+    pub llmq_members: BTreeMap<common::LLMQType, BTreeMap<UInt256, Vec<masternode::MasternodeEntry>>>,
+    pub llmq_indexed_members: BTreeMap<common::LLMQType, BTreeMap<masternode::LLMQIndexedHash, Vec<masternode::MasternodeEntry>>>,
+    pub mn_lists: BTreeMap<UInt256, masternode::MasternodeList>,
+    pub llmq_snapshots: BTreeMap<UInt256, masternode::LLMQSnapshot>,
     pub needed_masternode_lists: Vec<UInt256>,
 }
 
@@ -31,13 +31,13 @@ impl MasternodeProcessorCache {
         self.llmq_snapshots.clear();
         self.needed_masternode_lists.clear();
     }
-    pub fn add_masternode_list(&mut self, block_hash: UInt256, list: models::MasternodeList) {
+    pub fn add_masternode_list(&mut self, block_hash: UInt256, list: masternode::MasternodeList) {
         self.mn_lists.insert(block_hash, list);
     }
     pub fn remove_masternode_list(&mut self, block_hash: &UInt256) {
         self.mn_lists.remove(block_hash);
     }
-    pub fn add_snapshot(&mut self, block_hash: UInt256, snapshot: models::LLMQSnapshot) {
+    pub fn add_snapshot(&mut self, block_hash: UInt256, snapshot: masternode::LLMQSnapshot) {
         self.llmq_snapshots.insert(block_hash, snapshot);
     }
     pub fn remove_snapshot(&mut self, block_hash: &UInt256) {
@@ -46,14 +46,14 @@ impl MasternodeProcessorCache {
     pub fn get_quorum_members_of_type(
         &mut self,
         r#type: common::LLMQType,
-    ) -> Option<&mut BTreeMap<UInt256, Vec<models::MasternodeEntry>>> {
+    ) -> Option<&mut BTreeMap<UInt256, Vec<masternode::MasternodeEntry>>> {
         self.llmq_members.get_mut(&r#type)
     }
 
     pub fn get_indexed_quorum_members_of_type(
         &mut self,
         r#type: common::LLMQType,
-    ) -> Option<&mut BTreeMap<models::LLMQIndexedHash, Vec<models::MasternodeEntry>>> {
+    ) -> Option<&mut BTreeMap<masternode::LLMQIndexedHash, Vec<masternode::MasternodeEntry>>> {
         self.llmq_indexed_members.get_mut(&r#type)
     }
 
@@ -61,7 +61,7 @@ impl MasternodeProcessorCache {
         &mut self,
         r#type: common::LLMQType,
         block_hash: UInt256,
-    ) -> Option<Vec<models::MasternodeEntry>> {
+    ) -> Option<Vec<masternode::MasternodeEntry>> {
         let map_by_type_opt = self.get_quorum_members_of_type(r#type);
         if map_by_type_opt.is_some() {
             if let Some(members) = map_by_type_opt.as_ref().unwrap().get(&block_hash) {

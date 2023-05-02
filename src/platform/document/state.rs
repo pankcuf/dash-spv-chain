@@ -1,26 +1,24 @@
-use std::collections::HashMap;
-use crate::platform::document::document::{DocumentKey, DocumentValue};
 use crate::platform::document::state_type::StateType;
 
+#[derive(Debug, Default)]
 pub struct State {
     pub document_state_type: StateType,
-    pub data_change_dictionary: HashMap<DocumentKey, DocumentValue>,
+    pub data_change_dictionary: serde_json::Value,
 }
 
 impl State {
 
-    pub fn document_state_with_data_dictionary(data_dictionary: HashMap<DocumentKey, DocumentValue>) -> Self {
+    pub fn document_state_with_data_dictionary(data_dictionary: serde_json::Value) -> Self {
         Self {
-            document_state_type: if data_dictionary.contains_key("$updatedAt") && !data_dictionary.contains_key("$createdAt") {
-                StateType::Replace
-            } else {
-                StateType::Initial
+            document_state_type: match (data_dictionary.get("$updatedAt"), data_dictionary.get("$createdAt")) {
+                (Some(..), None) => StateType::Replace,
+                _ => StateType::Initial
             },
             data_change_dictionary: data_dictionary
         }
     }
 
-    pub fn document_state_with_data_dictionary_of_type(data_dictionary: HashMap<String, DocumentValue>, state_type: StateType) -> Self {
+    pub fn document_state_with_data_dictionary_of_type(data_dictionary: serde_json::Value, state_type: StateType) -> Self {
         Self {
             document_state_type: state_type,
             data_change_dictionary: data_dictionary

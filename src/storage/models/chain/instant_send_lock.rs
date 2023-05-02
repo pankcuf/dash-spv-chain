@@ -1,4 +1,4 @@
-use diesel::{QueryResult, QuerySource, Table};
+use diesel::{ExpressionMethods, QueryResult, QuerySource, Table};
 use diesel::query_builder::QueryFragment;
 use diesel::sqlite::Sqlite;
 use crate::chain::tx::instant_send_transaction_lock::InstantSendTransactionLock;
@@ -12,6 +12,7 @@ use crate::storage::models::tx::transaction::TransactionEntity;
 /// "transaction.transactionHash.txHash == %@"
 ///
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[diesel(table_name = instant_send_locks)]
 pub struct InstantSendLockEntity {
     pub id: i32,
     pub verified: Boolean,
@@ -22,7 +23,7 @@ pub struct InstantSendLockEntity {
 }
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="instant_send_locks"]
+#[diesel(table_name = instant_send_locks)]
 pub struct NewInstantSendLockEntity {
     pub verified: Boolean,
     pub signature: UInt768,
@@ -32,14 +33,15 @@ pub struct NewInstantSendLockEntity {
 
 impl Entity for InstantSendLockEntity {
     type ID = instant_send_locks::id;
-    type ChainId = None;
+    // type ChainId = ();
 
     fn id(&self) -> i32 {
         self.id
     }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        instant_send_locks::dsl::instant_send_locks
+        todo!()
+        //        instant_send_locks::dsl::instant_send_locks
     }
 }
 
@@ -92,7 +94,7 @@ impl InstantSendLockEntity {
             .and_then(|tx|
                 Self::update(
                     instant_send_locks::transaction_id.eq(tx.id),
-                    (instant_send_locks::verified.eq(verified)),
+                    instant_send_locks::verified.eq(verified),
                     context))
     }
 

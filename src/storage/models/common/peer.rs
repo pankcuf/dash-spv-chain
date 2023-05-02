@@ -1,17 +1,16 @@
 use std::collections::HashSet;
 use chrono::NaiveDateTime;
 use diesel::{BoolExpressionMethods, ExpressionMethods, Insertable, QueryResult, QuerySource, Table};
-use diesel::insertable::CanInsertInSingleQuery;
-use diesel::query_builder::{AsChangeset, QueryFragment};
+use diesel::query_builder::QueryFragment;
 use diesel::sqlite::Sqlite;
 use crate::chain::chain::Chain;
 use crate::chain::common::ChainType;
-use crate::chain::network::peer::Peer;
+use crate::chain::network::Peer;
 use crate::crypto::UInt128;
 use crate::schema::peers;
 use crate::storage::manager::managed_context::ManagedContext;
 use crate::storage::models::chain::chain::ChainEntity;
-use crate::storage::models::entity::{Entity, EntityConvertible, EntityUpdates};
+use crate::storage::models::entity::Entity;
 
 /// queries:
 /// "chain == %@"
@@ -23,6 +22,7 @@ use crate::storage::models::entity::{Entity, EntityConvertible, EntityUpdates};
 /// ["priority": DESC, "address": ASC]
 
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[diesel(table_name = peers)]
 pub struct PeerEntity {
     pub id: i32,
     pub address: i32,
@@ -39,7 +39,7 @@ pub struct PeerEntity {
 }
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="peers"]
+#[diesel(table_name = peers)]
 pub struct NewPeerEntity {
     pub address: i32,
     pub port: i16,
@@ -56,14 +56,15 @@ pub struct NewPeerEntity {
 
 impl Entity for PeerEntity {
     type ID = peers::id;
-    type ChainId = peers::chain_id;
+    // type ChainId = peers::chain_id;
 
     fn id(&self) -> i32 {
         self.id
     }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        peers::dsl::peers
+        todo!()
+        //        peers::dsl::peers
     }
 }
 
@@ -108,14 +109,14 @@ impl PeerEntity {
     pub fn get_all_peers_for_chain(chain_type: ChainType, context: &ManagedContext) -> QueryResult<Vec<PeerEntity>> {
         ChainEntity::get_chain(chain_type, context)
             .and_then(|chain_entity|
-                Self::read(peers::chain_id.eq(chain_entity.id), context))
+                PeerEntity::read(peers::chain_id.eq(chain_entity.id), context))
     }
 
 
     pub fn delete_all_peers_for_chain(chain_type: ChainType, context: &ManagedContext) -> QueryResult<usize> {
         ChainEntity::get_chain(chain_type, context)
             .and_then(|chain_entity|
-                Self::delete_by(peers::chain_id.eq(chain_entity.id), context))
+                PeerEntity::delete_by(peers::chain_id.eq(chain_entity.id), context))
     }
 
     pub fn delete_peers_except_list(chain_type: ChainType, addresses: &Vec<i32>, context: &ManagedContext) -> QueryResult<usize> {

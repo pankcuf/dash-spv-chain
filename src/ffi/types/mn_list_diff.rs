@@ -1,7 +1,7 @@
-use crate::types::coinbase_transaction::CoinbaseTransaction;
-use crate::types::llmq_entry::LLMQEntry;
-use crate::types::masternode_entry::MasternodeEntry;
-use crate::types::LLMQTypedHash;
+use crate::ffi::types::coinbase_transaction::CoinbaseTransaction;
+use crate::ffi::types::llmq_entry::LLMQEntry;
+use crate::ffi::types::masternode_entry::MasternodeEntry;
+use crate::ffi::types::LLMQTypedHash;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]

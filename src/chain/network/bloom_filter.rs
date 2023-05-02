@@ -1,15 +1,16 @@
 use std::cmp::min;
 use std::f64::consts::{E, LN_2};
-use std::intrinsics::{logf64, powf64};
+use std::io;
+use std::io::Cursor;
 use byte::ctx::Endian;
 use byte::{BytesExt, LE, TryRead};
-use crate::blockdata::opcodes::all::OP_PUSHDATA4;
+use murmur3::murmur3_32;
 use crate::chain::tx::transaction::ITransaction;
 use crate::consensus::Encodable;
 use crate::consensus::encode::VarInt;
-use crate::crypto::data_ops::{Data, ScriptElement};
 use crate::crypto::VarBytes;
-use murmur3::murmur3_32;
+use crate::util::data_append::DataAppend;
+use crate::util::script::ScriptElement;
 
 pub const BLOOM_MAX_HASH_FUNCS: u32 = 50;
 
@@ -22,6 +23,7 @@ pub const BLOOM_UPDATE_P2PUBKEY_ONLY: u8 = 2;
 /// this allows for 10,000 elements with a <0.0001% false positive rate
 pub const BLOOM_MAX_FILTER_LENGTH: u64 = 36000;
 
+#[derive(Debug, Default)]
 pub struct BloomFilter {
     pub tweak: u32,
     pub flags: u8,
@@ -49,10 +51,10 @@ impl BloomFilter {
         let length = min(if false_positive_rate < f64::EPSILON {
             BLOOM_MAX_FILTER_LENGTH
         } else {
-            (-1.0 / (LN_2 * LN_2)) * element_count * f64::ln(false_positive_rate) / 8.0
+            ((-1.0 / (LN_2 * LN_2)) * element_count as f64 * f64::ln(false_positive_rate) / 8.0) as u64
         }, BLOOM_MAX_FILTER_LENGTH);
         let filter = if length < 1 { vec![1] } else { length.to_le_bytes().to_vec() };
-        let hash_funcs = min((filter.len() * 8.0 / element_count) * LN_2, BLOOM_MAX_HASH_FUNCS);
+        let hash_funcs = BLOOM_MAX_HASH_FUNCS.min(((filter.len() as f64 * 8.0 / element_count as f64) * LN_2) as u32);
         Self {
             tweak,
             flags,
@@ -63,48 +65,57 @@ impl BloomFilter {
         }
     }
 
-    pub fn hash(&self, data: &mut Vec<u8>, hash_num: u32) -> u32 {
-        murmur3_32(data, hash_num * 0xfba4c795 + self.tweak) % (self.filter.len() * 8)
+    pub fn hash<T: io::Read>(&self, data: &mut T, hash_num: u32) -> u32 {
+        murmur3_32(data, hash_num * 0xfba4c795 + self.tweak).unwrap() % (self.filter.len() as u32 * 8)
     }
 
     pub fn contains_data(&self, data: &mut Vec<u8>) -> bool {
-        let b = self.filter.clone();
+        // let b = self.filter.clone();
         for _i in 0..self.hash_funcs {
-            let idx = self.hash(data, 1);
-            if !(b[idx >> 3] & (1 << (7 & idx))) {
+            let idx = self.hash(&mut Cursor::new(data), 1);
+            if self.filter[(idx >> 3) as usize] & (1 << (7 & idx)) == 0 {
                 return false;
             }
         }
         true
     }
+    pub fn insert_data_if_needed(&mut self, data: &mut Vec<u8>) {
+        if !self.contains_data(data) {
+            self.insert_data(data);
+        }
+    }
 
-    pub fn insert_data(&mut self, &mut data: Vec<u8>) {
-        let b = &mut self.filter.clone();
+    pub fn insert_data(&mut self, data: &mut Vec<u8>) {
+        // let b = &mut self.filter.clone();
         for _i in 0..self.hash_funcs {
-            let idx = self.hash(data, 1);
-            b[idx >> 3] |= (1 << (7 & idx));
+            let idx = self.hash(&mut Cursor::new(data), 1);
+            self.filter[(idx >> 3) as usize] |= 1 << (7 & idx);
 
         }
         self.element_count += 1;
     }
 
     pub fn update_with_transaction(&mut self, tx: &dyn ITransaction) {
-        let mut buffer: Vec<u8> = Vec::new();
+        let mut writer = &mut Vec::<u8>::new();
         let mut n = 0u32;
-        for output in tx.outputs() {
+        'outer: for output in tx.outputs() {
             if let Some(script) = output.script {
-                for elem in script.script_elements() {
-                    if elem.int_value() > OP_PUSHDATA4 as i32 || elem.int_value() == 0 || !self.contains_data(&mut elem.data()) {
-                        continue;
+                for element in script.script_elements() {
+                    match element {
+                        ScriptElement::Data(data, len @ 0u8 | len @ 0x4f..=u8::MAX) if !self.contains_data(&mut data.to_vec()) => {
+                            continue 'outer;
+                        },
+                        _ => {
+                            writer.clear();
+                            tx.tx_hash().enc(writer);
+                            n.enc(writer);
+                            if !self.contains_data(writer) {
+                                // update bloom filter with matched txout
+                                self.insert_data(writer);
+                            }
+                            break 'outer;
+                        }
                     }
-                    buffer.clear();
-                    tx.tx_hash().enc(&mut buffer);
-                    n.enc(&mut buffer);
-                    if !self.contains_data(&mut buffer) {
-                        // update bloom filter with matched txout
-                        self.insert_data(buffer.clone());
-                    }
-                    break;
                 }
             }
             n += 1;
@@ -112,7 +123,7 @@ impl BloomFilter {
     }
 
     pub fn false_positive_rate(&self) -> f64 {
-        f64::powf(1 - f64::powf(E, - 1.0 * self.hash_funcs * self.element_count / (self.length() * 8.0)), self.hash_funcs as f64)
+        f64::powf(1.0 - f64::powf(E, - 1.0 * self.hash_funcs as f64 * self.element_count as f64 / (self.length() as f64 * 8.0)), self.hash_funcs as f64)
     }
 
     pub fn length(&self) -> usize {

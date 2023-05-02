@@ -1,4 +1,4 @@
-use crate::types;
+use crate::ffi::types;
 use std::ptr::null_mut;
 
 #[repr(C)]

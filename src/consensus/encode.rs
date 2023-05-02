@@ -328,7 +328,7 @@ pub trait Decodable: Sized {
 }
 
 /// A variable-length unsigned integer
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug, Default)]
 pub struct VarInt(pub u64);
 
 /// Data which must be preceded by a 4-byte checksum

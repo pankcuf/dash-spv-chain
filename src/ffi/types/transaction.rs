@@ -1,10 +1,10 @@
 use byte::ctx::Endian;
 use byte::{BytesExt, TryRead, LE};
 use std::ptr::null_mut;
+use crate::chain::tx::{TransactionType, TX_UNCONFIRMED};
 use crate::consensus;
 use crate::ffi::boxer::{boxed, boxed_vec};
-use crate::tx::{TransactionType, TX_UNCONFIRMED};
-use crate::types::{TransactionInput, TransactionOutput};
+use crate::ffi::types::{TransactionInput, TransactionOutput};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]

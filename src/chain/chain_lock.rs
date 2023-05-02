@@ -1,23 +1,15 @@
-use std::collections::BTreeMap;
-use bitcoin_hashes::{Hash, sha256d};
 use bls_signatures::Scheme;
 use byte::BytesExt;
-use diesel::{Insertable, QueryResult, QuerySource, Table};
-use diesel::insertable::CanInsertInSingleQuery;
-use diesel::query_builder::{AsChangeset, QueryFragment};
-use diesel::sqlite::Sqlite;
 use crate::chain::common::chain_type::IHaveChainSettings;
 use crate::consensus::Encodable;
 use crate::consensus::encode::VarInt;
 use crate::crypto::{UInt256, UInt768};
 use crate::crypto::byte_util::{AsBytes, Zeroable};
-use crate::models::{LLMQEntry, MasternodeList};
+use crate::chain::masternode::{LLMQEntry, MasternodeList};
 use crate::chain::chain::Chain;
-use crate::storage::manager::managed_context::ManagedContext;
-use crate::storage::models::chain::chain_lock::{ChainLockEntity, NewChainLockEntity};
-use crate::storage::models::entity::{Entity, EntityConvertible, EntityUpdates};
+use crate::storage::models::chain::chain_lock::ChainLockEntity;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct ChainLock {
     pub height: u32,
     pub block_hash: UInt256,
@@ -41,7 +33,7 @@ impl ChainLock {
         let height = bytes.read_with::<u32>(offset, byte::LE).unwrap();
         let block_hash = bytes.read_with::<UInt256>(offset, byte::LE).unwrap();
         let signature = bytes.read_with::<UInt768>(offset, byte::LE).unwrap();
-        println!("the chain lock signature received for height {} (sig {}) (blockhash {})", height, signature, blockHash);
+        println!("the chain lock signature received for height {} (sig {}) (blockhash {})", height, signature, block_hash);
         Some(ChainLock {
             height,
             block_hash,
@@ -70,21 +62,30 @@ impl ChainLock {
     }
 
     pub fn get_request_id(&mut self) -> UInt256 {
-        if let Some(req_id) = self.request_id {
-            return req_id;
-        } else {
+        self.request_id.unwrap_or({
             let mut buffer: Vec<u8> = Vec::new();
-            "clsig".enc(&mut buffer);
+            "clsig".to_string().enc(&mut buffer);
             self.height.enc(&mut buffer);
             let req_id = UInt256::sha256d(&buffer);
             self.request_id = Some(req_id);
             req_id
-        }
+        })
+        // if let Some(req_id) = self.request_id {
+        //     return req_id;
+        // } else {
+        //     let mut buffer: Vec<u8> = Vec::new();
+        //     "clsig".to_string().enc(&mut buffer);
+        //     self.height.enc(&mut buffer);
+        //     let req_id = UInt256::sha256d(&buffer);
+        //     self.request_id = Some(req_id);
+        //     req_id
+        // }
     }
 
     pub fn sign_id_for_quorum_entry(&mut self, entry: &LLMQEntry) -> UInt256 {
         let mut buffer: Vec<u8> = Vec::new();
-        let chain_locks_type = VarInt(self.chain.params.chain_type.chain_locks_type().into());
+        let lock_type: u8 = self.chain.r#type().chain_locks_type().into();
+        let chain_locks_type = VarInt(lock_type as u64);
         chain_locks_type.enc(&mut buffer);
         entry.llmq_hash.enc(&mut buffer);
         self.get_request_id().enc(&mut buffer);
@@ -97,7 +98,7 @@ impl ChainLock {
         let use_legacy = entry.version.use_bls_legacy();
         let sign_id = self.sign_id_for_quorum_entry(entry);
         println!("verifying signature <REDACTED> with public key <REDACTED> for transaction hash <REDACTED> against quorum {:?}", entry);
-        assert_ne!(public_key.is_zero(), "verify_signature_against_quorum: public_key is empty");
+        assert!(public_key.is_zero(), "verify_signature_against_quorum: public_key is empty");
         if use_legacy {
             let bls_public_key = bls_signatures::G1Element::from_bytes_legacy(public_key.as_bytes()).unwrap();
             let bls_signature = bls_signatures::G2Element::from_bytes_legacy(self.signature.as_bytes()).unwrap();
@@ -110,7 +111,7 @@ impl ChainLock {
     }
 
     pub fn find_signing_quorum_return_masternode_list(&mut self) -> (Option<&LLMQEntry>, Option<&MasternodeList>) {
-        let llmq_type = self.chain.params.chain_type.chain_locks_type();
+        let llmq_type = self.chain.r#type().chain_locks_type();
         let recent_masternode_lists = self.chain.masternode_manager().recent_masternode_lists();
         let mut quorum: Option<&LLMQEntry> = None;
         let mut list: Option<&MasternodeList> = None;
@@ -140,12 +141,7 @@ impl ChainLock {
             if self.signature_verified {
                 self.intended_quorum = Some(quorum);
                 // We should also set the chain's last chain lock
-                if let Some(last_lock) = self.chain.last_chain_lock {
-
-                }
-                if self.chain.last_chain_lock.is_none() || self.chain.last_chain_lock.unwrap().height < self.height {
-                    self.chain.last_chain_lock = Some(self);
-                }
+                self.chain.update_last_chain_lock_if_need(self);
             } else if quorum.verified && offset == 8 {
                 return self.verify_signature_with_quorum_offset(0);
             } else if quorum.verified && offset == 0 {
@@ -184,23 +180,5 @@ impl ChainLock {
                 .expect("Can't update signature for chain lock entity");
         });
     }
-
 }
 
-impl EntityConvertible for ChainLock {
-    fn to_entity<T, U>(&self) -> U
-        where
-            T: Table + QuerySource,
-            T::FromClause: QueryFragment<Sqlite>,
-            U: Insertable<T>, diesel::insertable::Values: QueryFragment<Sqlite> + CanInsertInSingleQuery<Sqlite> {
-        todo!()
-    }
-
-    fn to_update_values<T, V>(&self) -> Box<dyn EntityUpdates<V>> where T: Table, V: AsChangeset<Target=T> {
-        todo!()
-    }
-
-    fn from_entity<T: Entity>(entity: T, context: &ManagedContext) -> QueryResult<Self> {
-        todo!()
-    }
-}

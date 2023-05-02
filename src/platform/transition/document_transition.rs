@@ -1,29 +1,29 @@
-use std::collections::HashMap;
+use serde_json::json;
 use crate::crypto::UInt256;
 use crate::chain::chain::Chain;
 use crate::dapi::platform_query::PlatformQuery;
 use crate::keys::key::IKey;
-use crate::platform::base::serializable_object::{SerializableKey, SerializableObject, SerializableValue};
+use crate::platform::base::serializable_object::SerializableObject;
 use crate::platform::document::Document;
-use crate::platform::document::document::{DocumentKey, DocumentValue};
 use crate::platform::identity::identity::Identity;
 use crate::platform::transition::r#type::Type;
-use crate::platform::transition::transition::{ITransition, Transition, TransitionValue};
+use crate::platform::transition::transition::{ITransition, Transition};
 
 pub enum DocumentTransitionKey {
     Transitions,
     OwnerId
 }
 
-impl SerializableKey for DocumentTransitionKey {
-    fn as_str(&self) -> &str {
-        match self {
-            DocumentTransitionKey::Transitions => "transitions",
-            DocumentTransitionKey::OwnerId => "ownerId",
-        }
-    }
-}
+// impl SerializableKey for DocumentTransitionKey {
+//     fn as_str(&self) -> &str {
+//         match self {
+//             DocumentTransitionKey::Transitions => "transitions",
+//             DocumentTransitionKey::OwnerId => "ownerId",
+//         }
+//     }
+// }
 
+#[derive(Debug, Default)]
 pub struct DocumentTransition {
     pub base: Transition,
     pub documents: Vec<Document>,
@@ -42,15 +42,18 @@ impl SerializableObject for DocumentTransition {
         self.base.chain()
     }
 
-    fn key_value_dictionary(&mut self) -> &HashMap<dyn SerializableKey, dyn SerializableValue> {
+    fn key_value_dictionary(&mut self) -> serde_json::Value {
         self.base.key_value_dictionary()
     }
 
-    fn base_key_value_dictionary(&self) -> &HashMap<dyn SerializableKey, dyn SerializableValue> {
-        let mut json = self.base.base_key_value_dictionary();
-        json.insert(DocumentTransitionKey::Transitions, TransitionValue::ArrayOfDictionaries(&self.documents_as_array_of_dictionaries()));
-        json.insert(DocumentTransitionKey::OwnerId, TransitionValue::Uint256(&self.base.identity_unique_id));
-        &json
+    fn base_key_value_dictionary(&self) -> serde_json::Value {
+        let mut map = serde_json::Map::from_iter([
+            ("protocolVersion".to_owned(), json!(self.chain().params.platform_protocol_version)),
+            ("type".to_owned(), json!(self.base.r#type)),
+            ("ownerId".to_owned(), json!(self.base.identity_unique_id)),
+            ("transitions".to_owned(), serde_json::Value::Array(self.documents_as_array_of_dictionaries())),
+        ]);
+        serde_json::Value::Object(map)
     }
 
     fn serialized(&mut self) -> Vec<u8> {
@@ -68,6 +71,10 @@ impl SerializableObject for DocumentTransition {
     fn serialized_base_data_hash(&mut self) -> Vec<u8> {
         self.base.serialized_base_data_hash()
     }
+
+    fn reset_serialized_values(&mut self) {
+        self.base.reset_serialized_values()
+    }
 }
 
 impl DocumentTransition {
@@ -83,7 +90,7 @@ impl DocumentTransition {
         }
     }
 
-    fn documents_as_array_of_dictionaries(&self) -> Vec<HashMap<DocumentKey, DocumentValue>> {
+    fn documents_as_array_of_dictionaries(&self) -> Vec<serde_json::Value> {
         self.documents.iter().map(|document| document.object_dictionary()).collect()
     }
 

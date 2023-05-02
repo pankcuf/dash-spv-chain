@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 use std::ptr::null_mut;
 use crate::ffi::boxer::{boxed, boxed_vec};
 use crate::ffi::from::FromFFI;
-use crate::{models, tx, types, UInt256};
-use crate::chain::common;
+use crate::chain::{common, masternode, tx};
+use crate::crypto::UInt256;
+use crate::ffi::types;
 
 pub trait ToFFI {
     type Item: FromFFI;
@@ -42,7 +43,7 @@ impl ToFFI for tx::TransactionOutput {
             None => (null_mut(), 0),
         };
         let (address, address_length) = match &self.address {
-            Some(data) => (boxed_vec(data.clone()), data.len()),
+            Some(data) => (boxed_vec(data.as_bytes().to_vec()), data.len()),
             None => (null_mut(), 0),
         };
         Self::Item {
@@ -76,11 +77,7 @@ impl ToFFI for tx::Transaction {
             outputs_count: self.outputs.len(),
             lock_time: self.lock_time,
             version: self.version,
-            tx_hash: if self.tx_hash.is_none() {
-                null_mut()
-            } else {
-                boxed(self.tx_hash.unwrap().0)
-            },
+            tx_hash: boxed(self.tx_hash.0),
             tx_type: self.tx_type,
             payload_offset: self.payload_offset,
             block_height: self.block_height,
@@ -101,11 +98,12 @@ impl ToFFI for tx::CoinbaseTransaction {
             } else {
                 boxed(self.merkle_root_llmq_list.unwrap().0)
             },
+            locked_amount: self.locked_amount
         }
     }
 }
 
-impl ToFFI for models::MasternodeList {
+impl ToFFI for masternode::MasternodeList {
     type Item = types::MasternodeList;
 
     fn encode(&self) -> Self::Item {
@@ -130,7 +128,7 @@ impl ToFFI for models::MasternodeList {
     }
 }
 
-impl ToFFI for models::MasternodeEntry {
+impl ToFFI for masternode::MasternodeEntry {
     type Item = types::MasternodeEntry;
 
     fn encode(&self) -> Self::Item {
@@ -225,7 +223,7 @@ impl ToFFI for models::MasternodeEntry {
     }
 }
 
-impl ToFFI for models::LLMQEntry {
+impl ToFFI for masternode::LLMQEntry {
     type Item = types::LLMQEntry;
 
     fn encode(&self) -> Self::Item {
@@ -274,7 +272,7 @@ impl ToFFI for models::LLMQEntry {
     }
 }
 
-impl ToFFI for models::LLMQSnapshot {
+impl ToFFI for masternode::LLMQSnapshot {
     type Item = types::LLMQSnapshot;
 
     fn encode(&self) -> Self::Item {
@@ -288,7 +286,7 @@ impl ToFFI for models::LLMQSnapshot {
     }
 }
 
-impl ToFFI for models::OperatorPublicKey {
+impl ToFFI for masternode::OperatorPublicKey {
     type Item = types::OperatorPublicKey;
 
     fn encode(&self) -> Self::Item {
@@ -308,7 +306,7 @@ impl ToFFI for common::BlockData {
 }
 
 pub fn encode_quorums_map(
-    quorums: &BTreeMap<common::LLMQType, BTreeMap<UInt256, models::LLMQEntry>>,
+    quorums: &BTreeMap<common::LLMQType, BTreeMap<UInt256, masternode::LLMQEntry>>,
 ) -> *mut *mut types::LLMQMap {
     boxed_vec(
         quorums
@@ -330,7 +328,7 @@ pub fn encode_quorums_map(
 }
 
 pub fn encode_masternodes_map(
-    masternodes: &BTreeMap<UInt256, models::MasternodeEntry>,
+    masternodes: &BTreeMap<UInt256, masternode::MasternodeEntry>,
 ) -> *mut *mut types::MasternodeEntry {
     boxed_vec(
         masternodes

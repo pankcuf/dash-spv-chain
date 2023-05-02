@@ -1,4 +1,4 @@
-use diesel::{QueryDsl, QueryResult, QuerySource, Table};
+use diesel::{ExpressionMethods, QueryDsl, QueryResult, QuerySource, Table};
 use diesel::query_builder::QueryFragment;
 use diesel::sqlite::Sqlite;
 use crate::chain::chain_lock::ChainLock;
@@ -13,6 +13,7 @@ use crate::storage::models::masternode::QuorumEntity;
 /// "merkleBlock.blockHash == %@"
 
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[diesel(table_name = chain_locks)]
 pub struct ChainLockEntity {
     pub id: i32,
     pub verified: bool,
@@ -24,7 +25,7 @@ pub struct ChainLockEntity {
 }
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="chain_locks"]
+#[diesel(table_name = chain_locks)]
 pub struct NewChainLockEntity {
     pub verified: bool,
     pub signature: UInt768,
@@ -36,14 +37,15 @@ pub struct NewChainLockEntity {
 
 impl Entity for ChainLockEntity {
     type ID = chain_locks::id;
-    type ChainId = chain_locks::chain_id;
+    // type ChainId = chain_locks::chain_id;
 
     fn id(&self) -> i32 {
         self.id
     }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        chain_locks::dsl::chain_locks
+        todo!()
+        //         chain_locks::dsl::chain_locks
     }
 }
 
@@ -102,7 +104,7 @@ impl ChainLockEntity {
 
     pub fn update_signature_valid_if_need(chain_lock: &ChainLock, context: &ManagedContext) -> QueryResult<usize> {
         Self::get_by_block_hash(&chain_lock.block_hash, context)
-            .and_then(|entity| entity.update_with((chain_locks::verified.eq(true)), context))
+            .and_then(|entity| entity.update_with(chain_locks::verified.eq(true), context))
     }
 
 }

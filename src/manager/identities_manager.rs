@@ -2,11 +2,20 @@ use std::collections::HashMap;
 use crate::crypto::UInt256;
 use crate::chain::chain::Chain;
 use crate::platform::identity::identity::Identity;
+use crate::platform::identity::transient_user::TransientUser;
+use crate::util;
 
+#[derive(Debug, Default)]
 pub struct IdentitiesManager {
     pub chain: &'static Chain,
     pub foreign_blockchain_identities: HashMap<UInt256, Identity>,
 
+}
+
+impl IdentitiesManager {
+    pub(crate) fn fetch_profile_for_identity(&self, identity: &mut Identity) -> Result<(bool, &TransientUser), util::Error> {
+        todo!()
+    }
 }
 
 impl IdentitiesManager {

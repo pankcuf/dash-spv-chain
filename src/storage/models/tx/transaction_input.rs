@@ -1,7 +1,7 @@
-use diesel::{QueryResult, QuerySource, Table};
+use diesel::{ExpressionMethods, QueryResult, QuerySource, Table};
 use diesel::query_builder::QueryFragment;
 use diesel::sqlite::Sqlite;
-use crate::crypto::primitives::utxo::UTXO;
+use crate::crypto::UTXO;
 use crate::crypto::UInt256;
 use crate::schema::transaction_inputs;
 use crate::storage::manager::managed_context::ManagedContext;
@@ -11,7 +11,8 @@ use crate::storage::models::entity::Entity;
 /// "localAddress.derivationPath.friendRequest == %@"
 /// indexation:
 /// "transaction.transactionHash.blockHeight": ASC
-#[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[derive(Identifiable, Queryable, PartialEq, Eq, Debug, Default)]
+#[diesel(table_name = transaction_inputs)]
 pub struct TransactionInputEntity {
     pub id: i32,
 
@@ -29,7 +30,7 @@ pub struct TransactionInputEntity {
 }
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="transaction_inputs"]
+#[diesel(table_name = transaction_inputs)]
 pub struct NewTransactionInputEntity {
     pub local_address_id: Option<i32>,
     pub prev_output_id: Option<i32>,
@@ -45,14 +46,15 @@ pub struct NewTransactionInputEntity {
 
 impl Entity for TransactionInputEntity {
     type ID = transaction_inputs::id;
-    type ChainId = None;
+    // type ChainId = ();
 
     fn id(&self) -> i32 {
         self.id
     }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        transaction_inputs::dsl::transaction_inputs
+        todo!()
+        //         transaction_inputs::dsl::transaction_inputs
     }
 }
 

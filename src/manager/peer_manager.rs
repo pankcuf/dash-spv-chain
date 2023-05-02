@@ -1,29 +1,23 @@
 use rand::thread_rng;
-use std::cmp::{min, Ordering};
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::time::{SystemTime, UNIX_EPOCH};
-use crate::chain::common::ChainType;
-use crate::consensus::Encodable;
-use crate::crypto::{UInt128, UInt256};
-use crate::crypto::byte_util::Zeroable;
-use crate::models::MasternodeList;
 use secp256k1::rand;
 use secp256k1::rand::Rng;
+use std::cmp::{min, Ordering};
+use std::collections::HashSet;
+use std::time::SystemTime;
+use crate::consensus::Encodable;
+use crate::crypto::{UInt128, UInt256};
+use crate::crypto::byte_util::{AsBytes, Zeroable};
+use crate::chain::masternode::MasternodeList;
 use crate::chain::chain::Chain;
 use crate::chain::dispatch_context::DispatchContext;
-use crate::chain::extension::sync_progress::SyncProgress;
+use crate::chain::ext::sync_progress::SyncProgress;
 use crate::chain::options::sync_type::SyncType;
 use crate::chain::spork;
 use crate::keychain::keychain::Keychain;
-use crate::manager::governance_sync_manager::GovernanceSyncManager;
-use crate::manager::peer_manager_desired_state::PeerManagerDesiredState;
-use crate::manager::transaction_manager::TransactionManager;
-use crate::chain::masternode::MasternodeManager;
-use crate::chain::network::bloom_filter::BloomFilter;
-use crate::chain::network::message::inv_type::InvType;
+use crate::manager::{GovernanceSyncManager, PeerManagerDesiredState, TransactionManager};
+use crate::chain::network::{BloomFilter, InvType};
 use crate::chain::network::peer::{DAYS_3_TIME_INTERVAL, HOURS_3_TIME_INTERVAL, MempoolTransactionCallback, Peer};
-use crate::chain::network::peer_status::PeerStatus;
-use crate::chain::network::peer_type::PeerType;
+use crate::chain::network::{PeerStatus, PeerType};
 use crate::manager::masternode_manager::MasternodeManager;
 use crate::notifications::{Notification, NotificationCenter};
 use crate::storage::manager::managed_context::ManagedContext;
@@ -32,15 +26,12 @@ use crate::storage::models::common::peer::PeerEntity;
 use crate::storage::models::entity::Entity;
 use crate::user_defaults::UserDefaults;
 use crate::util::time::TimeUtil;
-use crate::util::TimeUtil;
 
 pub const PEER_MAX_CONNECTIONS: usize = 5;
 pub const SETTINGS_FIXED_PEER_KEY: &str = "SETTINGS_FIXED_PEER";
 pub const LAST_SYNCED_GOVERANCE_OBJECTS: &str = "LAST_SYNCED_GOVERANCE_OBJECTS";
 pub const LAST_SYNCED_MASTERNODE_LIST: &str = "LAST_SYNCED_MASTERNODE_LIST";
 
-const MAINNET_DNS_SEEDS: Vec<&str> = vec!["dnsseed.dash.org"];
-const TESTNET_DNS_SEEDS: Vec<&str> = vec!["testnet-seed.dashdot.io"];
 
 /// services value indicating a node carries full blocks, not just headers
 pub const SERVICES_NODE_NETWORK: u64 = 0x01;
@@ -49,6 +40,9 @@ pub const SERVICES_NODE_BLOOM: u64 = 0x04;
 /// notify user of network problems after this many connect failures in a row
 pub const MAX_CONNECT_FAILURES: u32 = 20;
 
+pub const PROTOCOL_TIMEOUT: u64 = 20;
+
+#[derive(Debug, Default)]
 pub struct PeerInfo {
     pub address: UInt128,
     pub port: u16,
@@ -62,6 +56,7 @@ pub enum Error {
     NoPeersFound,
     SyncTimeout,
     Default(String),
+    DefaultWithCode(String, u32),
 }
 
 impl Error {
@@ -81,11 +76,13 @@ impl Error {
             Error::BloomFilteringNotSupported(peer) => format!("Node at host {} does not support bloom filtering", peer.host()),
             Error::NoPeersFound => format!("No peers found"),
             Error::SyncTimeout => format!("An error message for notifying that chain sync has timed out"),
-            Error::Default(message) => message
+            Error::Default(message) => message.clone(),
+            Error::DefaultWithCode(message, _) => message.clone()
         }
     }
 }
 
+#[derive(Debug, Default)]
 pub struct PeerManager {
     pub(crate) chain: &'static Chain,
     peers: Vec<Peer>,
@@ -96,7 +93,7 @@ pub struct PeerManager {
 
     connect_failures: u32,
     max_connect_count: usize,
-    connected_peers: HashSet<Peer>,
+    pub(crate) connected_peers: HashSet<Peer>,
     desired_state: PeerManagerDesiredState,
     masternode_list: Option<&'static MasternodeList>,
     masternode_list_connectivity_nonce: u64,
@@ -105,6 +102,37 @@ pub struct PeerManager {
     context: &'static ManagedContext,
     // @property (nonatomic, readonly) NSUInteger connectFailures, misbehavingCount, maxConnectCount;
 
+}
+
+impl PeerManager {
+    pub fn is_download_peer(&self, peer: &Peer) -> bool {
+        if let Some(dp) = &self.download_peer {
+            dp == peer
+        } else {
+            false
+        }
+    }
+    pub(crate) fn peer_misbehaving(&mut self, mut peer: &mut Peer, message: &str) {
+        // todo: multithreading
+        peer.misbehaving += 1;
+        if let Some(pos) = self.peers.iter().position(|p| p == peer) {
+            self.peers.remove(pos);
+        }
+        self.mutable_misbehaving_peers.insert(peer.clone());
+        let increased_count = self.misbehaving_count + 1;
+        if increased_count >= self.chain.peer_misbehaving_threshold() {
+            // clear out stored peers so we get a fresh list from DNS for next connect
+            self.misbehaving_count = 0;
+            self.mutable_misbehaving_peers.clear();
+            self.context.perform_block_and_wait(|context| {
+                PeerEntity::delete_all_peers_for_chain(self.chain.r#type(), context)
+                    .expect("Can't delete peer entities");
+            });
+            self.peers.clear();
+        }
+        peer.disconnect_with_error(Some(Error::DefaultWithCode(message.to_string(), 500)));
+        self.connect();
+    }
 }
 
 impl PeerManager {
@@ -153,11 +181,7 @@ impl PeerManager {
     }
 
     fn dns_seeds(&self) -> Vec<&str> {
-        match self.chain.params.chain_type {
-            ChainType::MainNet => MAINNET_DNS_SEEDS,
-            ChainType::TestNet => TESTNET_DNS_SEEDS,
-            ChainType::DevNet(_) => vec![]
-        }
+        self.chain.r#type().dns_seeds()
     }
 
     /// Peers
@@ -289,7 +313,7 @@ impl PeerManager {
                                         Err(err) => println!("Sqlite Error  {:?}", err)
                                     }
                                 } else {
-                                    match peer_entity.delete_itself(context) {
+                                    match PeerEntity::delete_by_id(peer_entity.id, context) {
                                         Ok(deleted) => {},
                                         Err(err) => println!("Sqlite Error  {:?}", err)
                                     }
@@ -442,13 +466,11 @@ impl PeerManager {
     pub fn peers_with_connectivity_nonce(&self, masternode_list: &MasternodeList, peer_count: usize, connectivity_nonce: u64) -> Vec<Peer> {
         let entries = &masternode_list.masternodes;
         let sorted_hashes = entries.keys().sorted_by(|&h1, &h2| {
-            let mut h1v: Vec<u8> = Vec::new();
-            h1.0.clone_into(&mut h1v);
+            let mut h1v: Vec<u8> = h1.as_bytes().to_vec();
             connectivity_nonce.enc(&mut h1v);
             let h1r = blake3::hash(&h1v).as_bytes();
             let h1ru = UInt256(*h1r);
-            let mut h2v: Vec<u8> = Vec::new();
-            h2.0.clone_into(&mut h2v);
+            let mut h2v: Vec<u8> = h2.as_bytes().to_vec();
             connectivity_nonce.enc(&mut h2v);
             let h2r = blake3::hash(&h2v).as_bytes();
             let h2ru = UInt256(*h2r);
@@ -613,7 +635,7 @@ impl PeerManager {
 
     pub fn sync_timeout(&mut self) {
         let now = SystemTime::seconds_since_1970();
-        if now - self.chain.last_chain_relay_time < PROTOCOL_TIMEOUT {
+        if now - self.chain.last_relay_time < PROTOCOL_TIMEOUT {
             // TODO: implement cancellation with token
             // the download peer relayed something in time, so restart timer
             // [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(syncTimeout) object:nil];
@@ -700,7 +722,7 @@ impl PeerManager {
                             }
                             return;
                         }
-                        println("[DSTransactionManager] fetching mempool message on connection success peer {}", peer.host());
+                        println!("[DSTransactionManager] fetching mempool message on connection success peer {}", peer.host());
                         peer.synced = true;
                         self.transaction_manager().remove_unrelayed_transactions_from_peer(peer);
                         if self.masternode_list.is_none() {
@@ -767,13 +789,13 @@ impl PeerManager {
         });
     }
 
-    pub fn peer_disconnected_with_error(&mut self, peer: &Peer, error: Option<Error>) {
+    pub fn peer_disconnected_with_error(&mut self, peer: &mut Peer, error: Option<Error>) {
         println!("{}:{} disconnected{}{}", peer.host(), peer.port, if error.is_some() { ", " } else { "" }, if error.is_some() { error.unwrap().message() } else { "" });
         if let Some(err) = error {
             if err.is_app_level() {
-                self.peer_misbehaving(peer, err.message());
+                self.peer_misbehaving(peer, err.message().as_str());
             } else {
-                if let Some(pos) = self.peers.iter().position(|x| *x == bad_peer) {
+                if let Some(pos) = self.peers.iter().position(|x| *x == *peer) {
                     self.peers.remove(pos);
                 }
                 self.connect_failures += 1;

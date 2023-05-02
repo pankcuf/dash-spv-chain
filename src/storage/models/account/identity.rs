@@ -1,12 +1,9 @@
-use std::iter::Filter;
-use std::ops::DerefMut;
-use std::slice::Iter;
 use chrono::NaiveDateTime;
 use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl, QueryResult, QuerySource, RunQueryDsl, Table};
-use diesel::dsl::count;
 use diesel::query_builder::QueryFragment;
 use diesel::sqlite::Sqlite;
 use crate::chain::common::ChainType;
+use crate::chain::wallet::constants::{DSBlockchainIdentityUpdateEventCreditBalance, DSBlockchainIdentityUpdateEventDashpaySyncronizationBlockHash, DSBlockchainIdentityUpdateEventRegistration};
 use crate::chain::wallet::wallet::Wallet;
 use crate::crypto::UInt256;
 use crate::platform::identity::identity::Identity;
@@ -18,17 +15,15 @@ use crate::storage::models::account::identity_key_path::{IdentityKeyPathEntity, 
 use crate::storage::models::account::identity_username::{IdentityUsernameEntity, NewIdentityUsernameEntity};
 use crate::storage::models::account::user::UserEntity;
 use crate::storage::models::chain::chain::ChainEntity;
-use crate::storage::models::entity::{Entity, EntityUpdates, last_insert_id};
-use crate::schema;
+use crate::storage::models::entity::{Entity, EntityUpdates};
 use crate::schema::identities;
-use crate::storage::models::common::derivation_path::DerivationPathEntity;
 
 /// "chain == %@"
 /// "uniqueID == %@"
 /// "chain == %@ && isLocal == FALSE"
 /// "chain == %@ && isLocal == TRUE"
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
-#[table_name="identities"]
+#[diesel(table_name = identities)]
 pub struct IdentityEntity {
     pub id: i32,
     pub credit_balance: i64,
@@ -55,7 +50,7 @@ pub struct IdentityEntity {
 }
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="identities"]
+#[diesel(table_name = identities)]
 pub struct NewIdentityEntity {
     pub chain_id: i32,
     pub credit_balance: i64,
@@ -71,10 +66,15 @@ pub struct NewIdentityEntity {
 
 impl Entity for IdentityEntity {
     type ID = identities::id;
-    type ChainId = identities::chain_id;
+    // type ChainId = identities::chain_id;
+
+    fn id(&self) -> i32 {
+        self.id
+    }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        identities::dsl::identities
+        todo!()
+        //         identities::dsl::identities
     }
 }
 
@@ -82,7 +82,7 @@ impl IdentityEntity {
 
     fn add_username_entity(&self, username_entity: IdentityUsernameEntity, context: &ManagedContext) -> QueryResult<usize> {
         let predicate = identities::id.eq(self.id);
-        let values = (identities::dashpay_username_id.eq(username_entity.id));
+        let values = identities::dashpay_username_id.eq(username_entity.id);
         Self::update(predicate, &values, context)
     }
 
@@ -135,12 +135,12 @@ impl IdentityEntity {
     pub fn delete_identity_for_wallet(unique_id: &UInt256, wallet: &Wallet, context: &ManagedContext) -> QueryResult<usize> {
         Self::identity_with_unique_id(unique_id, context)
             .and_then(|entity|
-                FriendRequestEntity::outgoing_requests_for_user_with_id(entity.matching_user_id, context).and_then(|requests| {
+                FriendRequestEntity::outgoing_requests_for_user_with_id(entity.matching_user_id.unwrap(), context).and_then(|requests| {
                     requests.iter().for_each(|request|
                         match AccountEntity::get_by_id(request.account_id, context) {
                             Ok(account_entity) => {
                                 if let Some(account) = wallet.accounts.get(&(account_entity.index as u32)) {
-                                    account.remove_incoming_derivation_path_for_friendship_with_identifier(request.friendship_identifier);
+                                    account.remove_incoming_derivation_path_for_friendship_with_identifier(&request.friendship_identifier);
                                 }
                             },
                             Err(err) => println!("no accounts saved with id {} for identity with unique_id {} error: {}", request.account_id, unique_id, err)
@@ -203,16 +203,16 @@ impl IdentityEntity {
         }
     }
 
-    pub fn update_if_needed(identity: &Identity, context: &ManagedContext) -> Result<Vec<String>, diesel::result::Error> {
+    pub fn update_if_needed<'a>(identity: &Identity, context: &ManagedContext) -> Result<Vec<&'a str>, diesel::result::Error> {
         let mut changed = false;
-        let mut events = Vec::<String>::new();
+        let mut events = Vec::<&str>::new();
         let mut updates = ();
         match Self::identity_with_unique_id(&identity.unique_id, context) {
             Ok(entity) => {
                 if entity.credit_balance != identity.credit_balance as i64 {
                     updates.append(identities::credit_balance.eq(identity.credit_balance));
                     changed = true;
-                    events.push(BlockchainIdentityUpdateEventCreditBalance);
+                    events.push(DSBlockchainIdentityUpdateEventCreditBalance);
                 }
                 if entity.registration_status != identity.registration_status.into() {
                     updates.append(identities::registration_status.eq(identity.registration_status.into()));
@@ -243,7 +243,7 @@ impl IdentityEntity {
                     changed = true;
                 }
                 if changed {
-                    Self::update(ID.eq(entity.id), &updates, context)
+                    Self::update(Self::ID.eq(entity.id), &updates, context)
                         .and_then(|updated| Ok(events))
                 } else {
                     Err(diesel::result::Error::NotFound)

@@ -1,7 +1,5 @@
 use std::ptr::null_mut;
-use crate::types::llmq_snapshot::LLMQSnapshot;
-use crate::types::mn_list_diff::MNListDiff;
-use crate::types::LLMQEntry;
+use crate::ffi::types::{LLMQEntry, LLMQSnapshot, MNListDiff};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]

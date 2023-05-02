@@ -1,9 +1,11 @@
-use std::io::{Error, Write};
-use crate::consensus::{Encodable, WriteExt};
+use byte::ctx::Endian;
+use byte::{BytesExt, TryRead};
 
 #[repr(u16)]
-#[derive(Debug, Eq, PartialEq, PartialOrd, Hash, Ord)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, PartialOrd, Hash, Ord)]
 pub enum Identifier {
+    #[default]
+    Unknown = 0,
     Spork2InstantSendEnabled = 10001,
     Spork3InstantSendBlockFiltering = 10002,
     Spork5InstantSendMaxValue = 10004,
@@ -51,7 +53,7 @@ impl Identifier {
         }
     }
 }
-
+// TODO: write macro
 impl From<u16> for Identifier {
     fn from(orig: u16) -> Self {
         match orig {
@@ -74,8 +76,14 @@ impl From<u16> for Identifier {
             10020 => Identifier::Spork21QuorumAllConnected,
             10021 => Identifier::Spork22PSMoreParticipants,
             10022 => Identifier::Spork23QuorumPoseConnected,
-            _ => {}
+            _ => Identifier::Unknown,
         }
+    }
+}
+
+impl From<i32> for Identifier {
+    fn from(orig: i32) -> Self {
+        (orig as u16).into()
     }
 }
 
@@ -100,15 +108,33 @@ impl From<Identifier> for u16 {
             Identifier::Spork20InstantSendLLMQBased => 10019,
             Identifier::Spork21QuorumAllConnected => 10020,
             Identifier::Spork22PSMoreParticipants => 10021,
-            Identifier::Spork23QuorumPoseConnected => 10022
+            Identifier::Spork23QuorumPoseConnected => 10022,
+            _ => 0
         }
     }
 }
 
-impl Encodable for Identifier {
-    #[inline]
-    fn consensus_encode<W: Write>(&self, mut writer: W) -> Result<usize, Error> {
-        writer.emit_slice(&self.into())?;
-        Ok(2) //u16
+impl From<Identifier> for i32 {
+    fn from(value: Identifier) -> Self {
+        let s_16: u16 = value.into();
+        s_16 as i32
     }
 }
+
+impl<'a> TryRead<'a, Endian> for Identifier {
+    fn try_read(bytes: &'a [u8], endian: Endian) -> byte::Result<(Self, usize)> {
+        let orig = bytes.read_with::<u16>(&mut 0, endian).unwrap();
+        let data = Identifier::from(orig);
+        Ok((data, std::mem::size_of::<u16>()))
+    }
+}
+
+
+// impl Encodable for Identifier {
+//     #[inline]
+//     fn consensus_encode<W: Write>(&self, mut writer: W) -> Result<usize, Error> {
+//         let s_16: u16 = self.into();
+//         writer.emit_slice(&s_16.to_le_bytes())?;
+//         Ok(2) //u16
+//     }
+// }

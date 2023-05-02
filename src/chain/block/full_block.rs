@@ -1,34 +1,35 @@
 use std::collections::HashMap;
-use diesel::query_builder::{AsChangeset, QueryFragment};
-use diesel::sqlite::Sqlite;
-use diesel::{Insertable, QueryResult, Table};
-use crate::crypto::byte_util::merkle_root_from_hashes;
 use crate::crypto::UInt256;
 use crate::chain::block::{Block, IBlock};
 use crate::chain::chain_lock::ChainLock;
 use crate::chain::tx::transaction::ITransaction;
-use crate::storage::manager::managed_context::ManagedContext;
-use crate::storage::models::entity::{Entity, EntityConvertible, EntityUpdates};
+use crate::storage::models::entity::Entity;
+use crate::util::data_ops::merkle_root_from_hashes;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct FullBlock {
     pub base: Block,
-    pub transactions: Vec<dyn ITransaction>,
+    pub transactions: Vec<&'static dyn ITransaction>,
 }
 
-impl EntityConvertible for FullBlock {
-    fn to_entity<T, U>(&self) -> U where T: Table, diesel::query_source::FromClause: QueryFragment<Sqlite>, U: Insertable<T>, diesel::insertable::Values: IValues {
-        todo!()
-    }
-
-    fn to_update_values<T, V>(&self) -> Box<dyn EntityUpdates<V>> where T: Table, V: AsChangeset<Target=T> {
-        todo!()
-    }
-
-    fn from_entity<T: Entity>(entity: T, context: &ManagedContext) -> QueryResult<Self> {
-        todo!()
-    }
-}
+// impl EntityConvertible for FullBlock {
+//     fn to_entity<T, U>(&self) -> U
+//         where
+//             T: Table,
+//             T::FromClause: QueryFragment<Sqlite>,
+//             U: Insertable<T>,
+//             U::Values: QueryFragment<Sqlite> + CanInsertInSingleQuery<Sqlite> {
+//         todo!()
+//     }
+//
+//     fn to_update_values(&self) -> Box<dyn EntityUpdates<bool, ResultType = (bool, )>> {
+//         todo!()
+//     }
+//
+//     fn from_entity<T: Entity>(entity: T, context: &ManagedContext) -> QueryResult<Self> {
+//         todo!()
+//     }
+// }
 
 impl IBlock for FullBlock {
     fn height(&self) -> u32 {
@@ -75,6 +76,14 @@ impl IBlock for FullBlock {
         self.base.set_chain_work(chain_work)
     }
 
+    fn set_chain_locked_with_chain_lock(&mut self, chain_lock: &mut ChainLock) {
+        self.base.set_chain_locked_with_chain_lock(chain_lock);
+    }
+
+    fn set_chain_locked_with_equivalent_block(&mut self, block: &dyn IBlock) {
+        self.base.set_chain_locked_with_equivalent_block(block);
+    }
+
     fn chain_locked(&self) -> bool {
         self.base.chain_locked()
     }
@@ -91,11 +100,23 @@ impl IBlock for FullBlock {
         self.base.is_valid()
     }
 
-    fn can_calculate_difficulty_with_previous_blocks(&self, previous_blocks: &HashMap<UInt256, dyn IBlock>) -> bool {
+    fn is_merle_tree_valid(&self) -> bool {
+        if let Some(merkle_root) = merkle_root_from_hashes(self.transaction_hashes()) {
+            if self.base.total_transactions > 0 && self.merkle_root().eq(&merkle_root) {
+                false
+            } else {
+                true
+            }
+        } else {
+            true
+        }
+    }
+
+    fn can_calculate_difficulty_with_previous_blocks(&self, previous_blocks: &HashMap<UInt256, &dyn IBlock>) -> bool {
         self.base.can_calculate_difficulty_with_previous_blocks(previous_blocks)
     }
 
-    fn verify_difficulty_with_previous_blocks(&self, previous_blocks: &HashMap<UInt256, dyn IBlock>) -> (bool, u32) {
+    fn verify_difficulty_with_previous_blocks(&self, previous_blocks: &HashMap<UInt256, &dyn IBlock>) -> (bool, u32) {
         self.base.verify_difficulty_with_previous_blocks(previous_blocks)
     }
 }
@@ -104,11 +125,7 @@ impl FullBlock {
 
     pub fn is_merkle_tree_valid(&self) -> bool {
         if let Some(root) = merkle_root_from_hashes(self.transaction_hashes()) {
-            if self.base.total_transactions > 0 && root != self.base.merkle_root() {
-                false
-            } else {
-                true
-            }
+            self.base.total_transactions == 0 || root == self.base.merkle_root()
         } else {
             false
         }

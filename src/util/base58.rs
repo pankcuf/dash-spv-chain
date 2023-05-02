@@ -86,12 +86,12 @@ impl<T: Default + Copy> SmallVec<T> {
 
     pub fn iter(&self) -> iter::Chain<slice::Iter<T>, slice::Iter<T>> {
         // If len<100 then we just append an empty vec
-        self.stack[0..self.len].iter().chain(self.heap.iter())
+        self.stack[..self.len].iter().chain(self.heap.iter())
     }
 
     pub fn iter_mut(&mut self) -> iter::Chain<slice::IterMut<T>, slice::IterMut<T>> {
         // If len<100 then we just append an empty vec
-        self.stack[0..self.len].iter_mut().chain(self.heap.iter_mut())
+        self.stack[..self.len].iter_mut().chain(self.heap.iter_mut())
     }
 }
 

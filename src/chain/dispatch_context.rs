@@ -1,4 +1,4 @@
-use std::thread;
+use std::future::Future;
 
 pub struct DispatchTime {
     pub time: u64,
@@ -13,17 +13,26 @@ impl DispatchTime {
     }
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum DispatchContextType {
     Global,
+    #[default]
     Main,
     Identity,
     Network,
 }
 
+#[derive(Clone, Debug, Default)]
 pub struct DispatchContext {
     //todo
     pub r#type: DispatchContextType,
     // main_context: &'static DispatchContext,
+}
+
+impl<'a> Default for &'a DispatchContext {
+    fn default() -> Self {
+        &DispatchContext::default()
+    }
 }
 
 impl DispatchContext {
@@ -36,6 +45,9 @@ impl DispatchContext {
 
     pub fn network_context() -> Self {
         Self::new(DispatchContextType::Network)
+    }
+    pub fn global_context() -> Self {
+        Self::new(DispatchContextType::Global)
     }
 
     pub fn flow(tasks: Vec<fn(&DispatchContext)>, context: &DispatchContext) {
@@ -51,12 +63,20 @@ impl DispatchContext {
         result
     }
 
-    pub fn queue<T>(&self, task: fn() -> T) -> T {
+    pub fn queue<T>(&self, task: impl Fn() -> T) -> T {
         // todo: use context queue to publish result
         task()
     }
 
-    pub fn after<T, E>(&self, time: DispatchTime) -> fn(Self) {
+    pub async fn async_queue<T: Future + Send>(&self, mut task: impl FnMut() -> T) -> T {
+        // todo: use context queue to publish result
+        task()
+    }
+
+
+
+    pub fn after<T, E>(&self, time: DispatchTime, mut task: impl FnMut() -> T) -> T {
         // todo: dispatch after timeout
+        task()
     }
 }

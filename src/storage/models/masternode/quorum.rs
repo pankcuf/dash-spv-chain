@@ -1,11 +1,10 @@
-use std::ops::DerefMut;
-use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl, QueryResult, QuerySource, RunQueryDsl, Table};
+use diesel::{BoolExpressionMethods, ExpressionMethods, QueryDsl, QueryResult, QuerySource, Table};
 use diesel::query_builder::QueryFragment;
 use diesel::sqlite::Sqlite;
 use crate::chain::common::{LLMQType, LLMQVersion};
 use crate::consensus::encode;
 use crate::crypto::{UInt256, UInt384, UInt768};
-use crate::models::LLMQEntry;
+use crate::chain::masternode::LLMQEntry;
 use crate::schema::quorums;
 use crate::storage::manager::managed_context::ManagedContext;
 use crate::storage::models::entity::Entity;
@@ -19,6 +18,7 @@ use crate::storage::models::entity::Entity;
 /// ["llmqType": DESC, block.height": DESC, "quorumHashData": DESC]
 
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[diesel(table_name = quorums)]
 pub struct QuorumEntity {
     pub id: i32,
     pub block_id: i32,
@@ -44,7 +44,7 @@ pub struct QuorumEntity {
 }
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="quorums"]
+#[diesel(table_name = quorums)]
 pub struct NewQuorumEntity {
     pub block_id: i32,
     pub chain_id: i32,
@@ -67,14 +67,15 @@ pub struct NewQuorumEntity {
 
 impl Entity for QuorumEntity {
     type ID = quorums::id;
-    type ChainId = quorums::chain_id;
+    // type ChainId = quorums::chain_id;
 
     fn id(&self) -> i32 {
         self.id
     }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        quorums::dsl::quorums
+        todo!()
+        //         quorums::dsl::quorums
     }
 }
 
@@ -178,7 +179,7 @@ impl QuorumEntity {
             // todo: check if this correct
             verified: self.version > 0/* self.verified*/,
             saved: true,
-            commitment_hash: None
+            ..Default::default()
         }
     }
 

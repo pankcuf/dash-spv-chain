@@ -1,4 +1,6 @@
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum GovernanceRequestState {
+    #[default]
     None,
     GovernanceObjectHashes,
     GovernanceObjectHashesCountReceived,

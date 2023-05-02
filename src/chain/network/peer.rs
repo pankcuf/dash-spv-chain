@@ -1,52 +1,43 @@
 use std::collections::HashSet;
-use std::env;
 use std::net::IpAddr;
-use std::time::{SystemTime, UNIX_EPOCH};
-use bitcoin_hashes::hex::ToHex;
-use bitcoin_hashes::{Hash, sha256d};
+use std::time::SystemTime;
 use byte::{BytesExt, Iter};
 use byte::ctx::{Bytes, NULL, Str};
 use chrono::NaiveDateTime;
-use diesel::query_builder::AsChangeset;
-use diesel::Table;
-use crate::consensus::Encodable;
-use crate::consensus::encode::VarInt;
-use crate::crypto::{UInt128, UInt256};
-use crate::crypto::byte_util::{AsBytes, Zeroable};
-use crate::crypto::data_ops::{hex_with_data, short_hex_string_from};
-use crate::models::MasternodeEntry;
-use crate::chain::tx::transaction::ITransaction;
 use secp256k1::rand::{Rng, thread_rng};
 use crate::chain::block::{IBlock, MerkleBlock};
 use crate::chain::chain::Chain;
 use crate::chain::chain_sync_phase::ChainSyncPhase;
-use crate::chain::merkle_block::MerkleBlock;
-use crate::chain::options::sync_type::SyncType;
 use crate::chain::{governance, spork};
-use crate::chain::tx;
 use crate::chain::chain_lock::ChainLock;
 use crate::chain::dispatch_context::DispatchContext;
-use crate::chain::spork::manager::PeerSporkDelegate;
-use crate::chain::spork::Spork;
-use crate::chain::sync_count_info::SyncCountInfo;
-use crate::manager::governance_sync_manager::{GovernanceSyncManager, PeerGovernanceDelegate};
-use crate::manager::masternode_manager::PeerMasternodeDelegate;
-use crate::manager::peer_manager;
-use crate::manager::peer_manager::{Error, SERVICES_NODE_NETWORK};
-use crate::manager::transaction_manager::{PeerTransactionDelegate, TransactionManager};
+use crate::chain::masternode::MasternodeEntry;
 use crate::chain::network::governance_request_state::GovernanceRequestState;
 use crate::chain::network::message::inv_type::InvType;
 use crate::chain::network::message::r#type::Type;
-use crate::chain::network::message::request::{GovernanceHashesRequest, GovernanceSyncRequest, IRequest, Request};
+use crate::chain::network::message::request::{IRequest, Request};
 use crate::chain::network::peer_type::PeerType;
-use crate::chain::network::{message, PeerStatus};
-use crate::chain::network::message::r#type::Type::Inv;
+use crate::chain::network::PeerStatus;
+use crate::chain::options::sync_type::SyncType;
+use crate::chain::spork::manager::PeerSporkDelegate;
+use crate::chain::spork::Spork;
+use crate::chain::sync_count_info::SyncCountInfo;
+use crate::chain::tx;
+use crate::chain::tx::transaction::ITransaction;
 use crate::chain::tx::instant_send_transaction_lock::InstantSendTransactionLock;
+use crate::consensus::Encodable;
+use crate::consensus::encode::VarInt;
+use crate::crypto::{UInt128, UInt256};
+use crate::crypto::byte_util::{AsBytes, Zeroable};
+use crate::util::data_ops::{hex_with_data, short_hex_string_from};
+use crate::manager::governance_sync_manager::PeerGovernanceDelegate;
+use crate::manager::masternode_manager::PeerMasternodeDelegate;
+use crate::manager::{GovernanceSyncManager, MasternodeManager, peer_manager};
+use crate::manager::peer_manager::{Error, SERVICES_NODE_NETWORK};
+use crate::manager::transaction_manager::{PeerTransactionDelegate, TransactionManager};
 use crate::schema::peers;
 use crate::storage::models::common::peer::NewPeerEntity;
 use crate::storage::models::entity::EntityUpdates;
-use crate::util::{TimeUtil, x11_hash};
-use crate::util::crypto::x11_hash;
 use crate::util::time::TimeUtil;
 
 pub const WEEK_TIME_INTERVAL: u64 = 604800; //7*24*60*60
@@ -59,14 +50,15 @@ pub const ENABLED_SERVICES: u64 = 0;
 pub const LOCAL_HOST: u32 = 0x7f000001;
 pub const MAX_MSG_LENGTH: usize = 0x02000000;
 pub const MAX_GETDATA_HASHES: usize = 50000;
+pub const MEMPOOL_TIMEOUT: u64 = 2;
 
-pub type PongCallback = fn(success: bool);
-pub type MempoolTransactionCallback = fn(success: bool, needed: bool, interrupted_by_disconnect: bool);
+pub type PongCallback = dyn Fn(bool) + Send + Sync;
+pub type MempoolTransactionCallback = dyn Fn(bool, bool, bool) + Send + Sync;
 
 const FNV32_PRIME: u32 = 0x01000193;
 const FNV32_OFFSET: u32 = 0x811C9dc5;
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Peer {
     pub address: UInt128,
     pub port: u16,
@@ -118,9 +110,9 @@ pub struct Peer {
 
     received_orphan_count: u32,
 
-    pong_handlers: Vec<PongCallback>,
+    pong_handlers: Vec<Box<PongCallback>>,
 
-    mempool_transaction_callback: Option<MempoolTransactionCallback>,
+    mempool_transaction_callback: Option<Box<MempoolTransactionCallback>>,
     mempool_request_time: u64,
 
     known_block_hashes: Vec<UInt256>,
@@ -133,14 +125,14 @@ pub struct Peer {
 
     governance_request_state: GovernanceRequestState,
 
-    current_block: Option<MerkleBlock>,
+    current_block: Option<&'static MerkleBlock>,
     current_block_tx_hashes: Option<Vec<UInt256>>,
 
 
     transaction_delegate: &'static TransactionManager,
-    governance_delegate: &'static dyn PeerGovernanceDelegate,
-    spork_delegate: &'static dyn PeerSporkDelegate,
-    masternode_delegate: &'static dyn PeerMasternodeDelegate,
+    governance_delegate: &'static GovernanceSyncManager,
+    spork_delegate: &'static spork::Manager,
+    masternode_delegate: &'static MasternodeManager,
 
     delegate_context: &'static DispatchContext,
 }
@@ -216,7 +208,7 @@ impl Peer {
 
     fn send_message(&self, message: Vec<u8>, r#type: Type) {
         if message.len() > MAX_MSG_LENGTH {
-            println!("{}:{} failed to send {}, length {} is too long", self.host(), self.port, r#type.into(), message.len());
+            println!("{}:{} failed to send {}, length {} is too long", self.host(), self.port, <Type as Into<String>>::into(r#type), message.len());
             return;
         }
         // TODO: implement p2p message sending
@@ -237,7 +229,7 @@ impl Peer {
     }
 
     fn send_version_message(&mut self) {
-        self.local_nonce = bound + thread_rng().gen::<u64>() << 32 | thread_rng().gen::<u64>();
+        self.local_nonce = thread_rng().gen::<u64>() << 32 | thread_rng().gen::<u64>();
         let user_agent = self.chain.user_agent();
         let request = Request::Version(self.address, self.port, self.chain.params.protocol_version, self.services, self.chain.params.standard_port, self.local_nonce, user_agent);
 
@@ -261,22 +253,21 @@ impl Peer {
 
     pub fn mempool_timeout(&mut self) {
         println!("[DSPeer] mempool time out {}", self.host());
-        let completion = self.mempool_transaction_callback;
         self.send_ping_message(|success| {
-            if let Some(completion) = completion {
+            if let Some(completion) = &self.mempool_transaction_callback {
                 completion(success, true, false);
             }
         });
         self.mempool_transaction_callback = None;
     }
 
-    pub fn send_mempool_message(&mut self, published_tx_hashes: Vec<UInt256>, completion: Option<MempoolTransactionCallback>) {
+    pub fn send_mempool_message(&mut self, published_tx_hashes: Vec<UInt256>, completion: Option<Box<MempoolTransactionCallback>>) {
         println!("{}:{} send_mempool_message", self.host(), self.port);
         self.known_tx_hashes.extend(published_tx_hashes);
         self.sent_mempool = true;
         if let Some(callback) = completion {
             // TODO: impl async callback
-            if let Some(mempool_callback) = self.mempool_transaction_callback {
+            if let Some(mempool_callback) = &self.mempool_transaction_callback {
                 //dispatch_async(self.delegateQueue, ^{
                 if self.status() == PeerStatus::Connected {
                     callback(false, false, false);
@@ -338,10 +329,10 @@ impl Peer {
     }
 
     pub fn send_inv_message_for_hashes(&mut self, inv_hashes: Vec<UInt256>, inv_type: InvType) {
-        println("{}:{} sending inv message of type {} hashes count {}", self.host(), self.port, inv_type.name(), inv_hashes.len());
+        println!("{}:{} sending inv message of type {} hashes count {}", self.host(), self.port, inv_type.name(), inv_hashes.len());
         let mut hashes = inv_hashes.clone();
         self.known_tx_hashes.iter().for_each(|tx_hash| {
-            if let Some(pos) = hashes.iter().position(|x| *x == tx_hash) {
+            if let Some(pos) = hashes.iter().position(|x| x == tx_hash) {
                 hashes.remove(pos);
             }
         });
@@ -350,7 +341,7 @@ impl Peer {
         }
         let request = Request::Inv(inv_type, &hashes);
         self.send_request(request);
-        todo!();
+        // todo!();
         match inv_type {
             InvType::Tx => {
                 //[self.known_tx_hashes unionOrderedSet:hashes];
@@ -403,10 +394,10 @@ impl Peer {
         let mut tx_hashes = tx_inv_hashes.unwrap_or(vec![]);
         let mut tx_lock_request_hashes = tx_lock_request_inv_hashes.unwrap_or(vec![]);
         self.known_tx_hashes.iter().for_each(|tx_hash| {
-            if let Some(pos) = tx_hashes.iter().position(|x| *x == tx_hash) {
+            if let Some(pos) = tx_hashes.iter().position(|x| x == tx_hash) {
                 tx_hashes.remove(pos);
             }
-            if let Some(pos) = tx_lock_request_hashes.iter().position(|x| *x == tx_hash) {
+            if let Some(pos) = tx_lock_request_hashes.iter().position(|x| x == tx_hash) {
                 tx_lock_request_hashes.remove(pos);
             }
         });
@@ -430,8 +421,7 @@ impl Peer {
     }
 
     pub fn send_getdata_message_for_tx_hash(&mut self, tx_hash: UInt256) {
-        let sync_type = &self.chain.options.sync_type;
-        if sync_type & SyncType::GetsNewBlocks == 0 {
+        if !self.chain.options.sync_type.contains(SyncType::GetsNewBlocks) {
             return;
         }
         self.send_request(Request::GetDataForTransactionHash(tx_hash));
@@ -439,7 +429,7 @@ impl Peer {
 
     pub fn send_getdata_message_with_tx_hashes(&mut self, tx_hashes: Option<&Vec<UInt256>>, is_lock_hashes: Option<&Vec<UInt256>>, isd_lock_hashes: Option<&Vec<UInt256>>, block_hashes: Option<&Vec<UInt256>>, c_lock_hashes: Option<&Vec<UInt256>>) {
         let sync_type = &self.chain.options.sync_type;
-        if sync_type & SyncType::GetsNewBlocks == 0 {
+        if !sync_type.contains(SyncType::GetsNewBlocks) {
             return;
         }
         let tx_hashes_len = if tx_hashes.is_some() { tx_hashes.unwrap().len() } else { 0 };
@@ -465,16 +455,17 @@ impl Peer {
         ));
     }
 
-    pub fn send_governance_request(&mut self, request: GovernanceHashesRequest) {
-        return;
-        if hashes.len() > MAX_GETDATA_HASHES { // limit total hash count to MAX_GETDATA_HASHES
-            println!("{}:{} couldn't send governance votes getdata, {} is too many items, max is {}", self.host(), self.port, hashes.len(), MAX_GETDATA_HASHES);
-            return;
-        } else if hashes.len() == 0 {
-            println!("{}:{} couldn't send governance getdata, there is no items", self.host(), self.port);
-            return;
-        }
-        self.send_request(request.message_request());
+    pub fn send_governance_request(&mut self, request: Request, state: GovernanceRequestState) {
+        // return;
+
+        // if hashes.len() > MAX_GETDATA_HASHES { // limit total hash count to MAX_GETDATA_HASHES
+        //     println!("{}:{} couldn't send governance votes getdata, {} is too many items, max is {}", self.host(), self.port, hashes.len(), MAX_GETDATA_HASHES);
+        //     return;
+        // } else if hashes.len() == 0 {
+        //     println!("{}:{} couldn't send governance getdata, there is no items", self.host(), self.port);
+        //     return;
+        // }
+        // self.send_request(request.message_request());
     }
 
     pub fn send_getaddr_message(&mut self) {
@@ -482,12 +473,10 @@ impl Peer {
         self.send_request(Request::Default(Type::Getaddr));
     }
 
-    pub fn send_ping_message(&mut self, callback: fn(bool)) {
+    pub fn send_ping_message(&mut self, callback: impl Fn(bool)) {
         // TODO: async?
         //dispatch_async(self.delegateQueue, ^{
-        if let Some(callback) = callback {
-            self.pong_handlers.push(callback);
-        }
+        self.pong_handlers.push(Box::new(callback));
         let request = Request::Ping(self.local_nonce);
         self.ping_start_time = SystemTime::seconds_since_1970();
         self.send_request(request);
@@ -511,16 +500,16 @@ impl Peer {
     /// Send Dash Governance
 
     /// Governance Synchronization for Votes and Objects
-    pub fn send_governance_sync_request(&mut self, request: GovernanceSyncRequest) {
+    pub fn send_governance_sync_request(&mut self, request: Request, state: GovernanceRequestState) {
         // Make sure we aren't in a governance sync process
         println!("{}:{} Requesting Governance Object Vote Hashes", self.host(), self.port);
         if self.governance_request_state != GovernanceRequestState::None {
             println!("{}:{} Requesting Governance Object Hashes out of resting state", self.host(), self.port);
             return;
         }
-        self.governance_request_state = request.state();
-        self.send_request(request.message_request());
-        if request.state() == GovernanceRequestState::GovernanceObjectHashes {
+        self.governance_request_state = state;
+        self.send_request(request);
+        if state == GovernanceRequestState::GovernanceObjectHashes {
             // we aren't afraid of coming back here within 5 seconds because a peer can only sendGovSync once every 3 hours
             //dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(10 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if self.governance_request_state == GovernanceRequestState::GovernanceObjectHashes {
@@ -542,10 +531,11 @@ impl Peer {
     /// Accept
     pub fn accept_message(&mut self, message: &[u8], r#type: Type) {
         if self.current_block.is_some() && (!(r#type == Type::Tx || r#type == Type::Ix || r#type == Type::Islock || r#type == Type::Isdlock))  {
-            let hash = cblock.block_hash();
+            let hash = self.current_block.unwrap().block_hash();
             self.current_block = None;
             self.current_block_tx_hashes = None;
-            self.disconnect_with_error(Some(Error::Default(format!("incomplete merkleblock {}, got {}", hash, r#type.into()))));
+            let code: String = r#type.into();
+            self.disconnect_with_error(Some(Error::Default(format!("incomplete merkleblock {}, got {}", hash, code))));
             return;
         }
         match r#type {
@@ -610,7 +600,7 @@ impl Peer {
     }
 
     pub fn accept_version_message(&mut self, message: &[u8]) {
-        NSNumber *l = nil;
+        // NSNumber *l = nil;
         if message.len() < 85 {
             self.disconnect_with_error(Some(Error::Default(format!("malformed version message, length is {}, should be > 84", message.len()))));
             return;
@@ -660,7 +650,7 @@ impl Peer {
 
         let offset = &mut 0;
         let count = message.read_with::<VarInt>(offset, byte::LE).unwrap();
-        let size = count.len() + count.0 * 30;
+        let size = count.len() + count.0 as usize * 30;
         if count.0 > 1000 {
             println!("{}:{} dropping addr message, {} is too many addresses (max 1000)", self.host(), self.port, count);
             return;
@@ -703,8 +693,8 @@ impl Peer {
     pub fn accept_inv_message(&mut self, message: &[u8]) {
         let offset = &mut 0;
         let count = message.read_with::<VarInt>(offset, byte::LE).unwrap();
-        if count.len() == 0 || message.len() < count.len() + count.0 * 36 {
-            self.disconnect_with_error(Some(Error::Default(format!("malformed inv message, length is {}, should be {} for {} items", message.len(), if count.len() == 0 { 1 } else { count.len() + count.0 * 36}, count.0))));
+        if count.len() == 0 || message.len() < count.len() + count.0 as usize * 36 {
+            self.disconnect_with_error(Some(Error::Default(format!("malformed inv message, length is {}, should be {} for {} items", message.len(), if count.len() == 0 { 1 } else { count.len() + count.0 as usize * 36}, count.0))));
             return;
         } else if count.0 > MAX_GETDATA_HASHES as u64 {
             println!("{}:{} dropping inv message, {} is too many items, max is {}", self.host(), self.port, count.0, MAX_GETDATA_HASHES);
@@ -719,7 +709,7 @@ impl Peer {
         let mut governance_object_hashes = Vec::<UInt256>::new();
         let mut governance_object_vote_hashes = Vec::<UInt256>::new();
         let mut only_private_send_transactions = false;
-        (count.len()..count.len() + 36 * count.0)
+        (count.len()..count.len() + 36 * count.0 as usize)
             .step_by(36)
             .for_each(|mut off| {
             let r#type = message.read_with::<InvType>(&mut off, byte::LE).unwrap();
@@ -753,7 +743,7 @@ impl Peer {
                     InvType::GovernanceObjectVote |
                     InvType::MasternodePaymentVote => {},
                     _ => {
-                        assert!(false, format!("inventory type not dealt with: {}", r#type.into()));
+                        assert!(false, "inventory type not dealt with: {}", r#type.into());
                     }
                 }
             }
@@ -771,7 +761,7 @@ impl Peer {
         } else if self.current_block_height > 0 &&
             block_hashes.len() > 2 &&
             block_hashes.len() < 500 &&
-            self.current_block_height + self.known_block_hashes.len() + block_hashes.len() < self.last_block_height {
+            self.current_block_height + (self.known_block_hashes.len() as u32 + block_hashes.len() as u32) < self.last_block_height {
             self.disconnect_with_error(Some(Error::Default(format!("non-standard inv, {} is fewer block hashes than expected", block_hashes.len()))));
             return;
         }
@@ -785,64 +775,70 @@ impl Peer {
         if !block_hashes.is_empty() {
             // remember blockHashes in case we need to re-request them with an updated bloom filter
             self.delegate_context.queue(|| {
-                self.known_block_hashes = HashSet::from(&self.known_block_hashes).union(&HashSet::from(&block_hashes)).collect();
+                let known = HashSet::from_iter(self.known_block_hashes.into_iter());
+                let iter = HashSet::from_iter(block_hashes.into_iter());
+                self.known_block_hashes = known.union(&iter).cloned().collect();
                 while self.known_block_hashes.len() < MAX_GETDATA_HASHES {
                     self.known_block_hashes.drain(0..self.known_block_hashes.len() / 3);
                 }
             });
         }
-        let known_tx_hashes_set = HashSet::from(&self.known_tx_hashes);
-        tx_hashes.intersection(&known_tx_hashes_set).for_each(|hash| {
+        let known_tx_hashes_set = HashSet::from_iter(self.known_tx_hashes.into_iter());
+        HashSet::from_iter(tx_hashes.into_iter()).intersection(&known_tx_hashes_set).for_each(|hash| {
             self.delegate_context.queue(|| {
                 if self.status() == PeerStatus::Connected {
                     self.transaction_delegate.peer_has_transaction_with_hash(self, hash);
                 }
             });
         });
-        tx_hashes = tx_hashes.difference(&known_tx_hashes_set).collect().iter().collect();
-        self.known_tx_hashes = known_tx_hashes_set.union(&tx_hashes).collect().iter().collect();
+        let tx_hashes_iter = HashSet::from_iter(tx_hashes.into_iter());
+        tx_hashes = tx_hashes_iter.difference(&known_tx_hashes_set).cloned().collect();
+        self.known_tx_hashes = known_tx_hashes_set.union(&tx_hashes_iter).cloned().collect();
 
         if !is_lock_hashes.is_empty() {
-            let known_is_lock_hashes_set = HashSet::from(&self.known_is_lock_hashes);
-            is_lock_hashes = is_lock_hashes.difference(&known_is_lock_hashes_set).collect().iter().collect();
+            let known_is_lock_hashes_set = HashSet::from_iter(self.known_is_lock_hashes.into_iter());
+            let is_lock_hashes_set = HashSet::from_iter(is_lock_hashes.into_iter());
+            is_lock_hashes = is_lock_hashes_set.difference(&known_is_lock_hashes_set).cloned().collect();
             //dispatch_async(self.delegateQueue, ^{
             if self.status() == PeerStatus::Connected {
                 self.transaction_delegate.peer_has_instant_send_lock_hashes(self, is_lock_hashes);
             }
             //});
-            self.known_is_lock_hashes = known_is_lock_hashes_set.union(&is_lock_hashes).collect().iter().collect();
+            self.known_is_lock_hashes = known_is_lock_hashes_set.union(&is_lock_hashes_set).cloned().collect();
         }
 
         if !isd_lock_hashes.is_empty() {
-            let known_isd_lock_hashes_set = HashSet::from(&self.known_isd_lock_hashes);
-            isd_lock_hashes = isd_lock_hashes.difference(&known_isd_lock_hashes_set).collect().iter().collect();
+            let known_isd_lock_hashes_set = HashSet::from_iter(self.known_isd_lock_hashes.into_iter());
+            let isd_lock_hashes_set = HashSet::from_iter(isd_lock_hashes.into_iter());
+            isd_lock_hashes = isd_lock_hashes_set.difference(&known_isd_lock_hashes_set).cloned().collect();
             //dispatch_async(self.delegateQueue, ^{
             if self.status() == PeerStatus::Connected {
                 self.transaction_delegate.peer_has_instant_send_deterministic_lock_hashes(self, isd_lock_hashes);
             }
             //});
-            self.known_isd_lock_hashes = known_isd_lock_hashes_set.union(&isd_lock_hashes).collect().iter().collect();
+            self.known_isd_lock_hashes = known_isd_lock_hashes_set.union(&isd_lock_hashes_set).cloned().collect();
         }
 
         if !c_lock_hashes.is_empty() {
-            let known_c_lock_hashes_set = HashSet::from(&self.known_chain_lock_hashes);
-            c_lock_hashes = c_lock_hashes.difference(&known_c_lock_hashes_set).collect().iter().collect();
+            let known_c_lock_hashes_set = HashSet::from_iter(self.known_chain_lock_hashes.into_iter());
+            let c_lock_hashes_set = HashSet::from_iter(c_lock_hashes.into_iter());
+            c_lock_hashes = c_lock_hashes_set.difference(&known_c_lock_hashes_set).cloned().collect();
             //dispatch_async(self.delegateQueue, ^{
             if self.status() == PeerStatus::Connected {
                 self.transaction_delegate.peer_has_chain_lock_hashes(self, c_lock_hashes);
             }
             //});
-            self.known_chain_lock_hashes = known_c_lock_hashes_set.union(&c_lock_hashes).collect().iter().collect();
+            self.known_chain_lock_hashes = known_c_lock_hashes_set.union(&c_lock_hashes).cloned().collect();
         }
 
         if tx_hashes.len() + is_lock_hashes.len() + isd_lock_hashes.len() > 0 ||
             (!self.needs_filter_update && (block_hashes.len() + c_lock_hashes.len() > 0)) {
             self.send_getdata_message_with_tx_hashes(
-                Some(tx_hashes.iter().collect()),
-                Some(is_lock_hashes.iter().collect()),
-                Some(isd_lock_hashes.iter().collect()),
-                if self.needs_filter_update { None } else { Some(block_hashes.iter().collect()) },
-                Some(c_lock_hashes.iter().collect()),
+                Some(tx_hashes.into_iter().collect()),
+                Some(is_lock_hashes.into_iter().collect()),
+                Some(isd_lock_hashes.into_iter().collect()),
+                if self.needs_filter_update { None } else { Some(block_hashes.into_iter().collect()) },
+                Some(c_lock_hashes.into_iter().collect()),
             );
         }
 
@@ -872,7 +868,7 @@ impl Peer {
                 // First we ust find if the blockHash is a terminal block hash
                 //
                 let found_in_terminal_blocks = self.chain.terminal_blocks.get(block_hashes.first().unwrap()).is_some();
-                let is_last_terminal_block = self.chain.last_terminal_block.unwrap() == block_hashes.first().unwrap();
+                let is_last_terminal_block = self.chain.last_terminal_block.unwrap().block_hash().eq(block_hashes.first().unwrap());
 
                 if found_in_terminal_blocks && !is_last_terminal_block {
                     self.send_getblocks_message_with_locators(vec![block_hashes[block_hashes.len() - 1], block_hashes[0]], UInt256::MIN);
@@ -915,11 +911,11 @@ impl Peer {
         if let Some(tx) = tx {
             let current_block = self.current_block;
             //dispatch_async(self.delegateQueue, ^{
-            self.transaction_delegate.peer_relayed_transaction(self, &tx, current_block);
+            self.transaction_delegate.peer_relayed_transaction(self, tx, current_block);
             //});
         }
 
-        if let Some(c_block) = self.current_block {
+        if let Some(c_block) = &self.current_block {
             // we're collecting tx messages for a merkleblock
             let tx_hash = if let Some(tx) = &tx {
                 tx.tx_hash()
@@ -936,7 +932,7 @@ impl Peer {
                     self.current_block = None;
                     self.current_block_tx_hashes = None;
                     //dispatch_sync(self.delegateQueue, ^{ // syncronous dispatch so we don't get too many queued up tx
-                    self.transaction_delegate.peer_relayed_block(self, &c_block);
+                    self.transaction_delegate.peer_relayed_block(self, c_block);
                     //});
                 }
             }
@@ -1009,7 +1005,7 @@ impl Peer {
         let offset = &mut 0;
         let count = message.read_with::<VarInt>(offset, byte::LE).unwrap();
         let num_headers = count.0;
-        let expected_size = count.len() + 81 * num_headers;
+        let expected_size = count.len() + 81 * num_headers as usize;
         if message.len() < expected_size {
             self.disconnect_with_error(Some(Error::Default(format!("malformed headers message, length is {}, should be {} for {} items", message.len(), expected_size, num_headers))));
             return;
@@ -1021,7 +1017,7 @@ impl Peer {
             if self.relay_speed == 0 {
                 self.relay_speed = speed;
             }
-            self.relay_speed = self.relay_speed * 0.9 + speed * 0.1;
+            self.relay_speed = (self.relay_speed as f64 * 0.9 + speed as f64 * 0.1) as u64;
             self.relay_start_time = 0;
         }
 
@@ -1034,7 +1030,7 @@ impl Peer {
         // NSTimeInterval lastTimestamp = [message UInt32AtOffset:l + 81 * (count - 1) + 68];
         // NSTimeInterval firstTimestamp = [message UInt32AtOffset:l + 81 + 68];
         if !self.chain.needs_initial_terminal_headers_sync() &&
-            (first_timestamp + DAY_TIME_INTERVAL * 2 >= self.earliestKeyTime) &&
+            (first_timestamp + DAY_TIME_INTERVAL * 2 >= self.earliest_key_time) &&
             self.chain.should_request_merkle_blocks_for_zone_after_height(self.chain.last_sync_block_height + 1) {
             // this is a rare scenario where we called getheaders but the first header returned was actually past the cuttoff, but the previous header was before the cuttoff
             println!("{}:{} calling getblocks with locators: {:?}", self.host(), self.port, self.chain.chain_sync_block_locator_array());
@@ -1045,9 +1041,9 @@ impl Peer {
             return;
         }
         if num_headers >= self.chain.params.headers_max_amount as u64 || (((last_timestamp + DAY_TIME_INTERVAL * 2) >= self.earliest_key_time) && (!self.chain.needs_initial_terminal_headers_sync())) {
-            let mut first_block_hash = x11_hash(bytes.read_with(offset, Bytes::Len(80)).unwrap());
-            let last_offset = &mut (*offset) + 81 * (num_headers - 1);
-            let mut last_block_hash = x11_hash(bytes.read_with(last_offset, Bytes::Len(80)).unwrap());
+            let mut first_block_hash = UInt256::x11_hash(message.read_with(offset, Bytes::Len(80)).unwrap());
+            let last_offset = &mut ((*offset) + 81 * (num_headers as usize - 1));
+            let mut last_block_hash = UInt256::x11_hash(message.read_with(last_offset, Bytes::Len(80)).unwrap());
             if last_timestamp + DAY_TIME_INTERVAL * 2 >= self.earliest_key_time &&
                 !self.chain.needs_initial_terminal_headers_sync() &&
                 self.chain.should_request_merkle_blocks_for_zone_after_height(self.chain.last_sync_block_height + 1) {
@@ -1062,7 +1058,7 @@ impl Peer {
                 while timestamp > 0 && (timestamp + DAY_TIME_INTERVAL * 2 < self.earliest_key_time) {
                     timestamp = message.read_with::<u32>(off, byte::LE).unwrap() as u64;
                 }
-                last_block_hash = x11_hash(bytes.read_with(off, Bytes::Len(80)).unwrap());
+                last_block_hash = UInt256::x11_hash(message.read_with(off, Bytes::Len(80)).unwrap());
                 println!("{}:{} calling getblocks with locators: [{}, {}]", self.host(), self.port, last_block_hash, first_block_hash);
                 self.send_getblocks_message_with_locators(vec![last_block_hash, first_block_hash], UInt256::MIN);
             } else {
@@ -1094,8 +1090,8 @@ impl Peer {
         let count = message.read_with::<VarInt>(offset, byte::LE).unwrap();
         let l = count.len();
         let size = count.0;
-        if l == 0 || message.len() < l + size * 36 {
-            self.disconnect_with_error(Some(Error::Default(format!("malformed getdata message, length is {}, should be {} for {} items", message.len(), if l == 0 { 1 } else { l } + size * 36, size))));
+        if l == 0 || message.len() < l + size as usize * 36 {
+            self.disconnect_with_error(Some(Error::Default(format!("malformed getdata message, length is {}, should be {} for {} items", message.len(), if l == 0 { 1 } else { l } + size as usize * 36, size as usize))));
             return;
         } else if size > MAX_GETDATA_HASHES as u64 {
             println!("{}:{} dropping getdata message, {} is too many items, max is {}", self.host(), self.port, size, MAX_GETDATA_HASHES);
@@ -1117,7 +1113,8 @@ impl Peer {
                     if let Some(transaction) = self.transaction_delegate.peer_requested_transaction(self, &hash) {
                         self.send_message(transaction.to_data(), Type::Tx);
                     } else {
-                        r#type.enc(&mut notfound);
+                        let type_u32: u32 = r#type.into();
+                        r#type_u32.enc(&mut notfound);
                         hash.enc(&mut notfound);
                     }
                 },
@@ -1125,7 +1122,8 @@ impl Peer {
                     if let Some(vote) = self.governance_delegate.peer_requested_vote(self, &hash) {
                         self.send_message(vote.data_message(), Type::Govobjvote);
                     } else {
-                        r#type.enc(&mut notfound);
+                        let type_u32: u32 = r#type.into();
+                        r#type_u32.enc(&mut notfound);
                         hash.enc(&mut notfound);
                     }
                 },
@@ -1133,12 +1131,14 @@ impl Peer {
                     if let Some(object) = self.governance_delegate.peer_requested_object(self, &hash) {
                         self.send_message(object.data_message(), Type::Govobj);
                     } else {
-                        r#type.enc(&mut notfound);
+                        let type_u32: u32 = r#type.into();
+                        r#type_u32.enc(&mut notfound);
                         hash.enc(&mut notfound);
                     }
                 },
                 _ => {
-                    r#type.enc(&mut notfound);
+                    let type_u32: u32 = r#type.into();
+                    r#type_u32.enc(&mut notfound);
                     hash.enc(&mut notfound);
                 }
 
@@ -1154,7 +1154,7 @@ impl Peer {
         let offset = &mut 0;
         let count = message.read_with::<VarInt>(offset, byte::LE).unwrap();
         let l = count.len();
-        let size = count.0;
+        let size = count.0 as usize;
         if l == 0 || message.len() < l + size * 36 {
             self.disconnect_with_error(Some(Error::Default(format!("malformed notfound message, length is {}, should be {} for {} items", message.len(), if l == 0 { 1 } else { l } + size * 36, size))));
             return;
@@ -1205,7 +1205,7 @@ impl Peer {
         if self.ping_start_time > 1 {
             let ping_time = SystemTime::seconds_since_1970() - self.ping_start_time;
             // 50% low pass filter on current ping time
-            self.ping_time = 0.5 * (self.ping_time + ping_time);
+            self.ping_time = (0.5 * (self.ping_time + ping_time) as f64) as u64;
             self.ping_start_time = 0;
         }
         //dispatch_async(self.delegateQueue, ^{
@@ -1230,12 +1230,12 @@ impl Peer {
                 self.disconnect_with_error(Some(Error::Default(format!("got merkleblock message before loading a filter"))));
                 return;
             }
-            let mut tx_hashes = HashSet::from(&block.transaction_hashes());
-            let known_tx_hashes_set = HashSet::from(&self.known_tx_hashes);
-            tx_hashes = tx_hashes.difference(&known_tx_hashes_set).collect().iter().collect();
+            let mut tx_hashes: HashSet<_> = HashSet::from_iter(block.transaction_hashes().into_iter());
+            let known_tx_hashes_set = HashSet::from_iter(self.known_tx_hashes.into_iter());
+            tx_hashes = tx_hashes.difference(&known_tx_hashes_set).cloned().collect();
             if !tx_hashes.is_empty() {
                 // wait til we get all the tx messages before processing the block
-                self.current_block = Some(block);
+                self.current_block = Some(&block);
                 self.current_block_tx_hashes = Some(tx_hashes.collect_vec());
             } else {
                 //dispatch_async(self.delegateQueue, ^{
@@ -1456,7 +1456,7 @@ impl Peer {
         self.status = PeerStatus::Connected;
         self.delegate_context.queue(|| {
             if self.status() == PeerStatus::Connected {
-                self.
+                self.per
             }
         });
         // dispatch_async(self.delegateQueue, ^{
@@ -1469,7 +1469,7 @@ impl Peer {
         self.received_orphan_count += 1;
         if self.received_orphan_count > 9 {
             //after 10 orphans mark this peer as bad by saying we got a bad block
-            self.transaction_delegate.peer_relayed_too_many_orphan_blocks(self.received_orphan_count);
+            self.transaction_delegate.peer_relayed_too_many_orphan_blocks(self, self.received_orphan_count as usize);
         }
 
     }
@@ -1484,9 +1484,8 @@ impl PartialEq<Self> for Peer {
 
 // Conversion Sqlite
 impl Peer {
-    pub fn update_values<T, V>(&self) -> Box<dyn EntityUpdates<V>>
-        where T: Table,
-              V: AsChangeset<Target=T> {
+
+    pub fn update_values(&self) -> Box<dyn EntityUpdates<bool, ResultType = (bool, )>> {
         Box::new((
             peers::timestamp.eq(NaiveDateTime::from_timestamp_opt(self.timestamp as i64, 0)),
             peers::services.eq(self.services as u64),

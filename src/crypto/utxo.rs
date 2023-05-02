@@ -4,7 +4,9 @@ use crate::consensus::Encodable;
 use crate::crypto::byte_util::{AsBytes, Zeroable};
 use crate::crypto::UInt256;
 
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, FromSqlRow, AsExpression)]
+// #[diesel(foreign_derive)]
+#[diesel(sql_type = diesel::sql_types::Binary)]
 pub struct UTXO {
     pub hash: UInt256,
     pub n: u32
@@ -60,4 +62,3 @@ impl AsBytes for UTXO {
 // if (self.length < 36) return DSUTXO_ZERO;
 // return (DSUTXO){.hash = [self UInt256], .n = *(uint32_t *)(self.bytes + 32)};
 // }
-

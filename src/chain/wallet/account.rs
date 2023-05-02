@@ -1,58 +1,58 @@
 use std::cmp;
 use std::cmp::{min, Ordering};
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::{HashMap, HashSet};
+use std::time::SystemTime;
 use secp256k1::rand::{Rng, thread_rng};
 use crate::blockdata::opcodes::all::{OP_RETURN, OP_SHAPESHIFT};
 use crate::chain::chain::Chain;
 use crate::chain::dispatch_context::DispatchContext;
+use crate::chain::ext::derivation::Derivation;
+use crate::chain::ext::settings::Settings;
 use crate::chain::network::peer::{DAY_TIME_INTERVAL, HOUR_TIME_INTERVAL};
 use crate::chain::tx::{CoinbaseTransaction, Transaction, TransactionType};
-use crate::chain::tx::transaction::ITransaction;
+use crate::chain::tx::transaction::{ITransaction, TX_MAX_LOCK_HEIGHT};
 use crate::chain::params::{BITCOIN_PUBKEY_ADDRESS, TX_INPUT_SIZE, TX_MAX_SIZE, TX_MIN_OUTPUT_AMOUNT, TX_OUTPUT_SIZE, TX_UNCONFIRMED};
 use crate::chain::tx::credit_funding_transaction::CreditFundingTransaction;
-use crate::chain::tx::provider_registration_transaction::{MASTERNODE_COST, ProviderRegistrationTransaction};
+use crate::chain::tx::{MASTERNODE_COST, ProviderRegistrationTransaction};
 use crate::chain::tx::provider_update_registrar_transaction::ProviderUpdateRegistrarTransaction;
 use crate::chain::tx::provider_update_service_transaction::ProviderUpdateServiceTransaction;
 use crate::chain::tx::transaction_direction::TransactionDirection;
 use crate::chain::tx::transaction_sort_type::TransactionSortType;
-use crate::chain::wallet::bip39_mnemonic::{BIP39_CREATION_TIME, BIP39_WALLET_UNKNOWN_CREATION_TIME};
 use crate::chain::wallet::extension::seed::SeedCompletionBlock;
-use crate::chain::wallet::wallet::Wallet;
-use crate::consensus::{Encodable, WriteExt};
+use crate::chain::wallet::wallet::{BIP39_CREATION_TIME, BIP39_WALLET_UNKNOWN_CREATION_TIME, Wallet};
 use crate::consensus::encode::VarInt;
 use crate::crypto::byte_util::{Reversable, Zeroable};
-use crate::crypto::data_ops::{DataAppend, inplace_intersection};
+use crate::util::data_ops::inplace_intersection;
 use crate::crypto::UInt256;
-use crate::crypto::primitives::utxo::UTXO;
-use crate::derivation::derivation_path;
-use crate::derivation::derivation_path::{DerivationPath, DerivationPathKind, IDerivationPath, SequenceGapLimit};
+use crate::crypto::UTXO;
+use crate::derivation::derivation_path::IDerivationPath;
+use crate::derivation::derivation_path_kind::DerivationPathKind;
 use crate::derivation::derivation_path_reference::DerivationPathReference;
 use crate::derivation::derivation_path_type::DerivationPathType;
 use crate::derivation::funds_derivation_path::FundsDerivationPath;
 use crate::derivation::incoming_funds_derivation_path::IncomingFundsDerivationPath;
+use crate::derivation::sequence_gap_limit::SequenceGapLimit;
 use crate::derivation::uint256_index_path::IIndexPath;
 use crate::keys::key::IKey;
 use crate::manager::governance_sync_manager::PROPOSAL_COST;
 use crate::notifications::{Notification, NotificationCenter};
 use crate::platform::identity::potential_one_way_friendship::PotentialOneWayFriendship;
 use crate::storage::manager::managed_context::ManagedContext;
-use crate::storage::models::entity::EntityConvertible;
 use crate::storage::models::tx::transaction::TransactionEntity;
-use crate::storage::models::tx::transaction_input::TransactionInputEntity;
 use crate::storage::models::tx::transaction_output::TransactionOutputEntity;
 use crate::util;
 use crate::util::base58;
+use crate::util::data_append::DataAppend;
 use crate::util::time::TimeUtil;
 
+#[derive(Debug, Default, Eq)]
 pub struct Account {
     /// BIP 43 derivation paths
-    pub fund_derivation_paths: Vec<dyn IDerivationPath>,
-    pub outgoing_fund_derivation_paths: Option<Vec<dyn IDerivationPath>>,
+    pub fund_derivation_paths: Vec<Box<dyn IDerivationPath>>,
     pub default_derivation_path: Option<FundsDerivationPath>,
     pub bip44_derivation_path: Option<FundsDerivationPath>,
     pub bip32_derivation_path: Option<FundsDerivationPath>,
-    pub master_contacts_derivation_path: Option<dyn IDerivationPath>,
+    pub master_contacts_derivation_path: Option<Box<dyn IDerivationPath>>,
     pub wallet: Option<&'static Wallet>,
     pub account_number: u32,
     /// current wallet balance excluding transactions known to be invalid
@@ -67,11 +67,11 @@ pub struct Account {
     // pub unspent_outputs: Vec<UTXO>,
     pub unspent_outputs: HashSet<UTXO>,
     /// latest 100 transactions sorted by date, most recent first
-    pub recent_transactions: Vec<dyn ITransaction>,
+    pub recent_transactions: Vec<Box<dyn ITransaction>>,
     /// latest 100 transactions sorted by date, most recent first
-    pub recent_transactions_with_internal_output: Vec<dyn ITransaction>,
+    pub recent_transactions_with_internal_output: Vec<Box<dyn ITransaction>>,
     /// all wallet transactions sorted by date, most recent first
-    pub all_transactions: Vec<dyn ITransaction>,
+    pub all_transactions: Vec<&'static dyn ITransaction>,
     /// all wallet transactions sorted by date, most recent first
     pub coinbase_transactions: Vec<CoinbaseTransaction>,
     /// Does this account have any coinbase rewards
@@ -87,12 +87,12 @@ pub struct Account {
     /// all the contacts for an account
     pub contacts: Vec<PotentialOneWayFriendship>,
 
-    all_tx: HashMap<UInt256, &'static dyn ITransaction>,
-    transactions: Vec<dyn ITransaction>,
-    transactions_to_save: Vec<dyn ITransaction>,
-    transactions_to_save_in_block_save: HashMap<u32, Vec<dyn ITransaction>>,
-    contact_incoming_fund_derivation_paths_dictionary: HashMap<UInt256, IncomingFundsDerivationPath>,
-    contact_outgoing_fund_derivation_paths_dictionary: HashMap<UInt256, IncomingFundsDerivationPath>,
+    all_tx: HashMap<UInt256, Box<dyn ITransaction>>,
+    transactions: Vec<Box<dyn ITransaction>>,
+    transactions_to_save: Vec<Box<dyn ITransaction>>,
+    transactions_to_save_in_block_save: HashMap<u32, Vec<Box<dyn ITransaction>>>,
+    contact_incoming_fund_derivation_paths_dictionary: HashMap<UInt256, &'static IncomingFundsDerivationPath>,
+    contact_outgoing_fund_derivation_paths_dictionary: HashMap<UInt256, &'static IncomingFundsDerivationPath>,
     is_view_only_account: bool,
     // the total amount spent from the account (excluding change)
     total_sent: u64,
@@ -103,10 +103,25 @@ pub struct Account {
     context: &'static ManagedContext,
 }
 
+impl<'a> Default for &'a Account {
+    fn default() -> Self {
+        &Account::default()
+    }
+}
+
+impl PartialEq for Account {
+    fn eq(&self, other: &Self) -> bool {
+        // TODO: impl actual comparison
+        self.account_number == other.account_number &&
+            self.utxos == other.utxos &&
+            self.balance == other.balance
+    }
+}
+
 
 impl Account {
 
-    pub fn account_with_account_number(account_number: u32, derivation_paths:Vec<FundsDerivationPath>, context: &ManagedContext) -> Self {
+    pub fn account_with_account_number(account_number: u32, mut derivation_paths: Vec<Box<dyn IDerivationPath>>, context: &ManagedContext) -> Self {
         Self::init_with(account_number, derivation_paths, context)
     }
 
@@ -119,13 +134,13 @@ impl Account {
                     context)).collect()
     }
 
-    pub fn verify_derivation_path_not_already_present(&self, derivation_path: &dyn IDerivationPath) -> bool {
+    pub fn verify_derivation_path_not_already_present(&self, derivation_path: &Box<dyn IDerivationPath>) -> bool {
         // Added derivation paths should be different from existing ones on account
         self.fund_derivation_paths.iter().find(|path| derivation_path.is_derivation_path_equal(path)).is_none()
     }
 
-    pub fn verify_and_assign_added_derivation_paths(&mut self, derivation_paths: Vec<&dyn IDerivationPath>) {
-        derivation_paths.iter().enumerate().for_each(|(i, derivation_path)| {
+    pub fn verify_and_assign_added_derivation_paths(&mut self, derivation_paths: Vec<Box<dyn IDerivationPath>>) {
+        derivation_paths.iter().enumerate().for_each(|(n, derivation_path)| {
             match derivation_path.reference() {
                 DerivationPathReference::BIP32 => {
                     if self.bip32_derivation_path.is_some() {
@@ -143,37 +158,33 @@ impl Account {
                     if self.master_contacts_derivation_path.is_some() {
                         assert!(true, "There should only be one master contacts derivation path");
                     }
-                    self.master_contacts_derivation_path = Some(derivation_path as DerivationPath);
+                    self.master_contacts_derivation_path = Some(Box::new(derivation_path));
                 },
                 _ => {}
             }
-            (i+1..derivation_paths.len()).for_each(|j| {
-                let derivation_path_2 = derivation_path[j];
-                assert!(!derivation_path.is_derivation_path_equal(derivation_path_2), "Derivation paths should all be different");
+            derivation_paths.iter().skip(n).for_each(|other| {
+                assert!(!derivation_path.is_derivation_path_equal(other), "Derivation paths should all be different");
             });
         });
     }
 
-    pub fn init_with(account_number: u32, derivation_paths: Vec<FundsDerivationPath>, context: &ManagedContext) -> Self {
-        let mut s = Self {
-            account_number,
-            context,
-            ..Default::default()
-        };
-        s.verify_and_assign_added_derivation_paths(derivation_paths.iter().collect::<Vec<&FundsDerivationPath>>());
-        for mut derivation_path in derivation_paths {
-            s.fund_derivation_paths.push(derivation_path);
-            derivation_path.base.account = Some(&s);
-        }
-        s
+    fn init_with(account_number: u32, mut derivation_paths: Vec<Box<dyn IDerivationPath>>, context: &ManagedContext) -> Self {
+        let mut account = Self { account_number, context, ..Default::default() };
+        account.verify_and_assign_added_derivation_paths(derivation_paths);
+        derivation_paths.iter_mut().for_each(|derivation_path| {
+            derivation_path.base.account = Some(&account);
+            // if derivation_path is FundsDerivationPath
+            account.fund_derivation_paths.push(derivation_path.clone());
+        });
+        account
     }
 
-    pub fn init_as_view_only_with_account_number(account_number: u32, derivation_paths: Vec<FundsDerivationPath>, context: &ManagedContext) -> Self {
-        let mut s = Self::init_with(account_number, derivation_paths, context);
-        s.is_view_only_account = true;
-        s.transactions_to_save = vec![];
-        s.transactions_to_save_in_block_save = HashMap::new();
-        s
+    pub fn init_as_view_only_with_account_number(context: &ManagedContext) -> Self {
+        let mut account = Self { account_number: 0, context, ..Default::default() };
+        account.is_view_only_account = true;
+        account.transactions_to_save = vec![];
+        account.transactions_to_save_in_block_save = HashMap::new();
+        account
     }
 
     pub fn set_wallet(&mut self, wallet: &Wallet) {
@@ -189,7 +200,7 @@ impl Account {
         if wallet.is_transient {
             return;
         }
-        match TransactionEntity::count_transactions_for_chain_type(wallet.chain.params.chain_type, self.context) {
+        match TransactionEntity::count_transactions_for_chain_type(wallet.chain.r#type(), self.context) {
             Ok(transactionCount) if transactionCount > self.all_tx.len() as i64 => {
                 // pre-fetch transaction inputs and outputs
                 match TransactionOutputEntity::aggregate_outputs(&wallet.unique_id_string, self.account_number, self.context) {
@@ -198,7 +209,7 @@ impl Account {
                             let hash = output.transaction.hash;
                             if self.all_tx.get(&hash).is_none() {
                                 if let Ok(tx) = Transaction::from_entity(&output.transaction, self.context) {
-                                    self.all_tx.insert(hash, &tx);
+                                    self.all_tx.insert(hash, tx.clone());
                                     self.transactions.push(tx);
                                 }
                             }
@@ -207,7 +218,7 @@ impl Account {
                                     // this has been spent, also add the transaction where it is being spent
                                     if self.all_tx.get(&hash).is_none() {
                                         if let Ok(tx) = Transaction::from_entity(spent_in_transaction, self.context) {
-                                            self.all_tx.insert(hash, &tx);
+                                            self.all_tx.insert(hash, tx.clone());
                                             self.transactions.push(tx);
                                         }
                                     }
@@ -282,21 +293,13 @@ impl Account {
     }
 
     /// returns the first unused external address
-    pub fn receive_address(&self) -> Option<String> {
-        if let Some(path) = &self.default_derivation_path {
-            path.receive_address
-        } else {
-            None
-        }
+    pub fn receive_address(&self) -> Option<&String> {
+        self.default_derivation_path.and_then(|mut path| path.receive_address())
     }
 
     /// returns the first unused internal address
-    pub fn change_address(&self) -> Option<String> {
-        if let Some(path) = &self.default_derivation_path {
-            path.change_address
-        } else {
-            None
-        }
+    pub fn change_address(&self) -> Option<&String> {
+        self.default_derivation_path.and_then(|mut path| path.change_address())
     }
 
     /// NSData objects containing serialized UTXOs
@@ -307,38 +310,38 @@ impl Account {
 
     /// Derivation Paths
 
-    pub fn remove_derivation_path(&mut self, derivation_path: &dyn IDerivationPath) {
-        if let Some(pos) = self.fund_derivation_paths.iter().position(|x| x == derivation_path) {
+    pub fn remove_derivation_path(&mut self, derivation_path: Box<dyn IDerivationPath>) {
+        if let Some(pos) = self.fund_derivation_paths.iter().position(|x| *x == derivation_path) {
             self.fund_derivation_paths.remove(pos);
         }
     }
 
     pub fn remove_incoming_derivation_path_for_friendship_with_identifier(mut self, friendship_id: &UInt256) {
-        if let Some(path) = self.contact_incoming_fund_derivation_paths_dictionary.get(friendship_id) {
-            self.remove_derivation_path(path);
+        if let Some(&&path) = self.contact_incoming_fund_derivation_paths_dictionary.get(friendship_id) {
+            self.remove_derivation_path(Box::new(path));
         }
     }
 
     pub fn derivation_path_for_friendship_with_identifier(&self, friendship_id: &UInt256) -> Option<&IncomingFundsDerivationPath> {
         self.contact_incoming_fund_derivation_paths_dictionary.get(friendship_id)
             .or(self.contact_outgoing_fund_derivation_paths_dictionary.get(friendship_id))
+            .map(|&p| p)
     }
 
-    pub fn add_derivation_path(&mut self, derivation_path: &dyn IDerivationPath) {
+    pub fn add_derivation_path(&mut self, derivation_path: Box<dyn IDerivationPath>) {
         if !self.is_view_only_account {
-            let path = derivation_path.clone();
-            self.verify_and_assign_added_derivation_paths(vec![derivation_path.clone()]);
+            self.verify_and_assign_added_derivation_paths(vec![derivation_path]);
         }
-        if self.verify_derivation_path_not_already_present(derivation_path) {
-            self.fund_derivation_paths.push(derivation_path);
+        if self.verify_derivation_path_not_already_present(&derivation_path) {
+            self.fund_derivation_paths.push(derivation_path.clone());
         }
     }
 
     pub fn add_incoming_derivation_path(&mut self, derivation_path: &mut IncomingFundsDerivationPath, friendship_identifier: UInt256, context: &ManagedContext) {
         assert!(!derivation_path.is_empty(), "derivation path must have a length");
         derivation_path.base.account = Some(self);
-        self.add_derivation_path(derivation_path);
-        self.contact_incoming_fund_derivation_paths_dictionary.insert(friendship_identifier, *derivation_path);
+        self.add_derivation_path(Box::new(derivation_path));
+        self.contact_incoming_fund_derivation_paths_dictionary.insert(friendship_identifier, derivation_path);
         if derivation_path.has_extended_public_key() {
             derivation_path.load_addresses_in_context(context);
         }
@@ -348,24 +351,24 @@ impl Account {
     pub fn add_outgoing_derivation_path(&mut self, derivation_path: &mut IncomingFundsDerivationPath, friendship_identifier: UInt256, context: &ManagedContext) {
         assert!(derivation_path.source_is_local || derivation_path.base.is_empty(), "derivation path must not have a length unless it is on device");
         derivation_path.base.account = Some(self);
-        self.contact_outgoing_fund_derivation_paths_dictionary.insert(friendship_identifier, *derivation_path);
+        self.contact_outgoing_fund_derivation_paths_dictionary.insert(friendship_identifier, derivation_path);
         if derivation_path.has_extended_public_key() {
             derivation_path.load_addresses_in_context(context);
         }
     }
 
-    pub fn add_derivation_paths_from_array(&mut self, derivation_paths: Vec<&dyn IDerivationPath>) {
+    pub fn add_derivation_paths_from_array(&mut self, derivation_paths: Vec<Box<dyn IDerivationPath>>) {
         if !self.is_view_only_account {
             self.verify_and_assign_added_derivation_paths(derivation_paths);
         }
-        derivation_paths.iter().for_each(|derivation_path| {
-            if self.verify_derivation_path_not_already_present(derivation_path) {
+        derivation_paths.iter().for_each(|&derivation_path| {
+            if self.verify_derivation_path_not_already_present(&derivation_path) {
                 self.fund_derivation_paths.push(derivation_path);
             }
         });
     }
 
-    pub fn outgoing_fund_derivation_paths(&self) -> Vec<IncomingFundsDerivationPath> {
+    pub fn outgoing_fund_derivation_paths(&self) -> Vec<&IncomingFundsDerivationPath> {
         self.contact_outgoing_fund_derivation_paths_dictionary.values().collect()
     }
 
@@ -374,7 +377,7 @@ impl Account {
         self.default_derivation_path = Some(path);
     }
 
-    pub fn derivation_path_containing_address(&self, address: Option<String>) -> Option<&dyn IDerivationPath> {
+    pub fn derivation_path_containing_address(&self, address: &String) -> Option<&dyn IDerivationPath> {
         self.fund_derivation_paths.iter().find(|path| path.contains_address(address))
     }
 
@@ -445,56 +448,61 @@ impl Account {
     }
 
     /// true if the address is controlled by the wallet
-    pub fn contains_address(&self, address: Option<String>) -> bool {
+    pub fn contains_address(&self, address: &String) -> bool {
         self.fund_derivation_paths.iter().find(|path| path.contains_address(address)).is_some()
     }
 
     /// true if the address is controlled by the wallet
-    pub fn contains_internal_address(&self, address: Option<String>) -> bool {
+    pub fn contains_internal_address(&self, address: &String) -> bool {
         self.fund_derivation_paths.iter().find(|path|
             path.kind() == DerivationPathKind::Funds &&
                 (path as FundsDerivationPath).contains_change_address(address)).is_some()
     }
 
-    pub fn base_derivation_paths_contain_address(&self, address: Option<String>) -> bool {
-        self.fund_derivation_paths.iter().find(|path|
-            path.kind() == DerivationPathKind::IncomingFunds &&
-                path.contains_address(address)).is_some()
+    pub fn base_derivation_paths_contain_address(&self, address: &String) -> bool {
+        self.fund_derivation_paths.iter()
+            .find(|path|
+                path.kind() == DerivationPathKind::IncomingFunds && path.contains_address(address))
+            .is_some()
     }
 
     /// true if the address is controlled by the wallet
-    pub fn contains_external_address(&self, address: Option<String>) -> bool {
-        self.fund_derivation_paths.iter().find(|path|
-            path.kind() == DerivationPathKind::Funds && path.contains_receive_address(address) ||
-            path.kind() == DerivationPathKind::IncomingFunds && path.contains_address(address.clone())
-        ).is_some()
+    pub fn contains_external_address(&self, address: &String) -> bool {
+        self.fund_derivation_paths.iter()
+            .find(|path|
+                path.kind() == DerivationPathKind::Funds && path.contains_receive_address(address) ||
+                    path.kind() == DerivationPathKind::IncomingFunds && path.contains_address(address))
+            .is_some()
     }
 
-    pub fn external_derivation_path_containing_address(&self, address: Option<String>) -> Option<&IncomingFundsDerivationPath> {
-        self.contact_outgoing_fund_derivation_paths_dictionary.values().find(|path| path.contains_address(address))
+    pub fn external_derivation_path_containing_address(&self, address: &String) -> Option<&IncomingFundsDerivationPath> {
+        self.contact_outgoing_fund_derivation_paths_dictionary.into_values().find(|path| path.contains_address(address))
     }
 
     /// true if the address was previously used as an input or output in any wallet transaction
-    pub fn address_is_used(&self, address: Option<String>) -> bool {
-        self.fund_derivation_paths.iter().find(|path| path.address_is_used(address)).is_some()
+    pub fn address_is_used(&self, address: &String) -> bool {
+        self.fund_derivation_paths.iter()
+            .find(|path| path.address_is_used(address))
+            .is_some()
     }
 
-    pub fn transaction_address_already_seen_in_outputs(&self, address: Option<String>) -> bool {
+    pub fn transaction_address_already_seen_in_outputs(&self, address: &String) -> bool {
         self.all_transactions.iter()
             .find(|tx|
                 tx.outputs().iter()
-                    .find(|output| output.address == address)
+                    .filter_map(|o| o.address)
+                    .find(|a| a == address)
                     .is_some())
             .is_some()
     }
 
     /// Balance
     ///
-    pub fn update_balance(&mut self) {
+    fn update_balance(&mut self) {
         let mut balance = 0u64;
         let mut prev_balance = 0u64;
-        let total_send = 0;
-        let mut total_received = 0;
+        let mut total_received = 0u64;
+        let mut total_sent = 0u64;
         let mut utxos = HashSet::<UTXO>::new();
         let mut spent_outputs = HashSet::<>::new();
         let mut invalid_tx = HashSet::<>::new();
@@ -503,11 +511,9 @@ impl Account {
         let mut balance_history = Vec::new();
         let now = SystemTime::seconds_since_1970();
 
-        self.fund_derivation_paths.iter().for_each(|path| {
-            path.balance = 0;
-        });
+        self.fund_derivation_paths.iter().for_each(|mut path| path.set_balance(0));
 
-        for tx in self.transactions.rev() {
+        for tx in self.transactions.iter().rev() {
             let mut spent = HashSet::new();
             let mut inputs: HashSet<UInt256>;
             let mut n = 0u32;
@@ -533,11 +539,11 @@ impl Account {
                 inputs = HashSet::new();
             }
             // add inputs to spent output set
-            spent_outputs.union(&spent);
+            spent_outputs = spent_outputs.union(&spent).collect();
             n = 0;
             // check if any inputs are pending
             if tx.block_height() == TX_UNCONFIRMED as u32 {
-                if tx.size() > TX_MAX_SIZE {
+                if tx.size() > TX_MAX_SIZE as usize {
                     // check transaction size is under TX_MAX_SIZE
                     pending = true;
                 }
@@ -568,7 +574,6 @@ impl Account {
             let locked_block_height: u32 = self.transaction_outputs_are_locked_till(tx);
 
             if locked_block_height != 0 {
-
                 if !pending_coinbase_locked_transaction_hashes.contains(&locked_block_height) {
                     pending_coinbase_locked_transaction_hashes.insert(locked_block_height, HashSet::new());
                 }
@@ -581,14 +586,16 @@ impl Account {
             // TODO: don't add coin generation outputs < 100 blocks deep
             // NOTE: balance/UTXOs will then need to be recalculated when last block changes
             for output in tx.outputs() {
-                for derivation_path in self.fund_derivation_paths {
-                    if derivation_path.contains_address(output.address) {
-                        if derivation_path.kind() == DerivationPathKind::Funds {
-                            (derivation_path as FundsDerivationPath).set_has_known_balance();
+                for mut derivation_path in self.fund_derivation_paths {
+                    if let Some(address) = &output.address {
+                        if derivation_path.contains_address(address) {
+                            if derivation_path.kind() == DerivationPathKind::Funds {
+                                (derivation_path as FundsDerivationPath).set_has_known_balance();
+                            }
                         }
                     }
                     let amount = output.amount;
-                    derivation_path.balance += amount;
+                    derivation_path.set_balance(derivation_path.balance() + amount);
                     utxos.insert(UTXO { hash: tx.tx_hash(), n });
                     balance += amount;
                 }
@@ -602,14 +609,16 @@ impl Account {
             for o in spent {
                 let transaction = self.all_tx.get(&o.hash);
                 utxos.remove(&o);
-                let output = transaction.unwrap().outputs().get(&o.n);
+                let output = transaction.unwrap().outputs().get(&o.n as usize).unwrap();
                 let amount = output.amount;
                 balance -= amount;
-                for derivation_path in self.fund_derivation_paths {
-                    if derivation_path.contains_address(output.address) {
-                        derivation_path.balance -= amount;
-                        break;
+                if let Some(path) = self.fund_derivation_paths.iter_mut().find(|path| {
+                    match &output.address {
+                        Some(address) if path.contains_address(address) => true,
+                        _ => false
                     }
+                }) {
+                    path.set_balance(path.balance() - amount);
                 }
             }
             if prev_balance < balance {
@@ -664,7 +673,7 @@ impl Account {
                     .position(|a| a == output.address))
     }
 
-    #[Inline]
+    #[inline]
     fn is_ascending(&self, tx1: &dyn ITransaction, tx2: &dyn ITransaction) -> bool {
         // if (!tx1 || !tx2) return NO;
         if tx1.block_height() > tx2.block_height() {
@@ -730,16 +739,16 @@ impl Account {
     }
 
     /// last 100 transactions sorted by date, most recent first
-    pub fn recent_transactions(&self) -> Vec<&dyn ITransaction> {
-        self.transactions[0..min(100, self.transactions.len())].iter().cloned().collect()
+    pub fn recent_transactions(&self) -> Vec<Box<dyn ITransaction>> {
+        self.transactions[..min(100, self.transactions.len())].iter().cloned().collect()
     }
 
     /// last 100 transactions sorted by date, most recent first
-    pub fn recent_transactions_with_internal_output(&self) -> Vec<&dyn ITransaction> {
-        let mut recent_transaction_array = Vec::<&dyn ITransaction>::new();
+    pub fn recent_transactions_with_internal_output(&self) -> Vec<Box<dyn ITransaction>> {
+        let mut recent_transaction_array = Vec::<Box<dyn ITransaction>>::new();
         let mut i = 0;
         while recent_transaction_array.len() < 100 && i < self.transactions.len() {
-            if let Some(transaction) = self.transactions.get(i) {
+            if let Some(&transaction) = self.transactions.get(i) {
                 if transaction.has_non_dust_output_in_wallet(self.wallet.unwrap()) {
                     recent_transaction_array.push(transaction);
                 }
@@ -750,12 +759,12 @@ impl Account {
     }
 
     /// all wallet transactions sorted by date, most recent first
-    pub fn all_transactions(&self) -> &Vec<dyn ITransaction> {
+    pub fn all_transactions(&self) -> &Vec<&dyn ITransaction> {
         &self.transactions
     }
 
     /// all wallet transactions sorted by date, most recent first
-    pub fn coinbase_transactions(&self) -> &Vec<dyn ITransaction> {
+    pub fn coinbase_transactions(&self) -> &Vec<&dyn ITransaction> {
         self.transactions.iter().filter(|tx| tx.r#type() == TransactionType::Coinbase).collect()
     }
 
@@ -779,31 +788,35 @@ impl Account {
             if let Some(tx) = self.all_tx.get(&input.input_hash) {
                 let n = input.index as usize;
                 let outputs = tx.outputs();
-                if n < outputs.len() && self.contains_address(outputs.get(n).unwrap().address.clone()) {
-                    return true;
+                if let Some(out) = outputs.get(n) {
+                    if let Some(a) = &out.address {
+                        if n < outputs.len() && self.contains_address(a) {
+                            return true;
+                        }
+                    }
                 }
             }
         }
         match transaction.r#type() {
             TransactionType::ProviderRegistration => {
-                let provider_registration_transaction = transaction as ProviderRegistrationTransaction;
-                if self.contains_address(provider_registration_transaction.payout_address()) {
-                    return true;
+                if let Some(payout_address) = (transaction as ProviderRegistrationTransaction).payout_address() {
+                    if self.contains_address(&payout_address) {
+                        return true;
+                    }
                 }
             },
             TransactionType::ProviderUpdateService => {
-                let mut provider_update_service_transaction = transaction as ProviderUpdateServiceTransaction;
-                let payout_address_opt = provider_update_service_transaction.payout_address();
-                if let Some(payout_address) = payoout_address_opt {
-                    if self.contains_address(payout_address_opt) {
+                if let Some(payout_address) = (transaction as ProviderUpdateServiceTransaction).payout_address() {
+                    if self.contains_address(&payout_address) {
                         return true;
                     }
                 }
             },
             TransactionType::ProviderUpdateRegistrar => {
-                let mut provider_update_registrar_transaction = transaction as ProviderUpdateRegistrarTransaction;
-                if self.contains_address(provider_update_registrar_transaction.payout_address()) {
-                    return true;
+                if let Some(payout_address) = (transaction as ProviderUpdateRegistrarTransaction).payout_address() {
+                    if self.contains_address(&payout_address) {
+                        return true;
+                    }
                 }
             },
             _ => {}
@@ -836,7 +849,7 @@ impl Account {
     /// returns an unsigned transaction that sends the specified amount from the wallet to the given address
     pub fn transaction_for(&mut self, amount: u64, address: String, with_fee: bool) -> Option<&dyn ITransaction> {
         if let Some(wallet) = self.wallet {
-            let script = Vec::<u8>::script_pub_key_for_address(&address, wallet.chain);
+            let script = Vec::<u8>::script_pub_key_for_address(&address, wallet.chain.script());
             self.transaction_for_amounts(vec![amount],  vec![script], with_fee)
         } else {
             None
@@ -846,9 +859,9 @@ impl Account {
     /// returns an unsigned transaction that sends the specified amount from the wallet to the given address
     pub fn credit_funding_transaction_for(&mut self, amount: u64, address: String, with_fee: bool) -> Option<&CreditFundingTransaction> {
         if let Some(wallet) = self.wallet {
-            let script = Vec::<u8>::credit_burn_script_pub_key_for_address(&address, wallet.chain);
-            let tx = CreditFundingTransaction { base: Transaction::init_on_chain(wallet.chain), ..Default::default() };
-            self.update_transaction_with_sort_type(&tx, vec![amount], vec![script], with_fee, TransactionSortType::BIP69)
+            let script = Vec::<u8>::credit_burn_script_pub_key_for_address(&address, wallet.chain.script());
+            let mut tx = CreditFundingTransaction { base: Transaction::init_on_chain(wallet.chain), ..Default::default() };
+            self.update_transaction_with_sort_type(&mut tx, vec![amount], vec![script], with_fee, TransactionSortType::BIP69)
         } else {
             None
         }
@@ -861,8 +874,8 @@ impl Account {
     }
 
     pub fn transaction_for_amounts_to_shapeshift_address(&mut self, amounts: Vec<u64>, output_scripts: Vec<Vec<u8>>, with_fee: bool, shapeshift_address: Option<String>) -> Option<&dyn ITransaction> {
-        let tx = Transaction::init_on_chain(self.wallet.unwrap().chain);
-        self.update_transaction_with_sort_type_to_shapeshift_address(&tx, amounts, output_scripts, with_fee, shapeshift_address, TransactionSortType::BIP69)
+        let mut tx = Transaction::init_on_chain(self.wallet.unwrap().chain);
+        self.update_transaction_with_sort_type_to_shapeshift_address(&mut tx, amounts, output_scripts, with_fee, shapeshift_address, TransactionSortType::BIP69)
     }
 
     /// Proposal Transaction Creation
@@ -874,16 +887,16 @@ impl Account {
     /// Update
 
     /// returns an unsigned transaction that sends the specified amounts from the wallet to the specified output scripts
-    pub fn update_transaction(&mut self, transaction: &dyn ITransaction, amounts: Vec<u64>, output_scripts: Vec<Vec<u8>>, with_fee: bool) -> Option<&dyn ITransaction> {
+    pub fn update_transaction(&mut self, transaction: &mut dyn ITransaction, amounts: Vec<u64>, output_scripts: Vec<Vec<u8>>, with_fee: bool) -> Option<&dyn ITransaction> {
         self.update_transaction_with_sort_type(transaction, amounts, output_scripts, with_fee, TransactionSortType::BIP69)
     }
 
-    pub fn update_transaction_with_sort_type(&mut self, transaction: &dyn ITransaction, amounts: Vec<u64>, output_scripts: Vec<Vec<u8>>, with_fee: bool, sort_type: TransactionSortType) -> Option<&dyn ITransaction> {
+    pub fn update_transaction_with_sort_type(&mut self, transaction: &mut dyn ITransaction, amounts: Vec<u64>, output_scripts: Vec<Vec<u8>>, with_fee: bool, sort_type: TransactionSortType) -> Option<&dyn ITransaction> {
         self.update_transaction_with_sort_type_to_shapeshift_address(transaction, amounts, output_scripts, with_fee, None, sort_type)
     }
 
     /// returns an unsigned transaction that sends the specified amounts from the wallet to the specified output scripts
-    pub fn update_transaction_with_sort_type_to_shapeshift_address(&mut self, transaction: &dyn ITransaction, amounts: Vec<u64>, output_scripts: Vec<Vec<u8>>, with_fee: bool, shapeshift_address: Option<String>, sort_type: TransactionSortType) -> Option<&dyn ITransaction> {
+    pub fn update_transaction_with_sort_type_to_shapeshift_address(&mut self, transaction: &mut dyn ITransaction, amounts: Vec<u64>, output_scripts: Vec<Vec<u8>>, with_fee: bool, shapeshift_address: Option<String>, sort_type: TransactionSortType) -> Option<&dyn ITransaction> {
         let mut amount = 0u64;
         let mut balance = 0u64;
         let mut fee_amount = 0u64;
@@ -942,9 +955,9 @@ impl Account {
                     }
                     let last_amount = amounts.last().unwrap();
                     // todo: check array bounds
-                    let mut new_amounts = Vec::from(amounts[0..amounts.len() - 1]);
-                    let mut new_scripts = Vec::from(outputs_scripts[0..outputs_scripts.len() - 1]);
-                    if last_amount > amount + fee_amount + self.wallet.unwrap().chain.min_output_amount - balance {
+                    let mut new_amounts = Vec::from(amounts[..amounts.len() - 1]);
+                    let mut new_scripts = output_scripts.clone().drain(..output_scripts.len() - 1).collect();
+                    if *last_amount > amount + fee_amount + self.wallet.unwrap().chain.params.min_output_amount() - balance {
                         // reduce final output amount
                         new_amounts.push(last_amount - (amount + fee_amount - balance));
                         new_scripts.push(output_scripts.last().unwrap().clone());
@@ -991,7 +1004,9 @@ impl Account {
             transaction.sort_inputs_according_to_bip69();
         }
         if balance - (amount + fee_amount) >= self.wallet.unwrap().chain.min_output_amount {
-            transaction.add_output_address(self.change_address(), balance - (amount + fee_amount));
+            if let Some(address) = self.change_address() {
+                transaction.add_output_address(address, balance - (amount + fee_amount));
+            }
             if follow_bip69_sorting {
                 transaction.sort_outputs_according_to_bip69();
             } else if sort_type == TransactionSortType::Shuffle {
@@ -1049,15 +1064,15 @@ impl Account {
     /// Removal
 
     /// removes a transaction from the wallet along with any transactions that depend on its outputs
-    pub fn remove_transaction_with_hash(&self, tx_hash: &UInt256, save_immediately: bool) -> bool {
-        if let Some(tx) = self.all_tx.get(tx_hash) {
-            tx.remove_transaction(transaction, save_immediately)
+    pub fn remove_transaction_with_hash(&mut self, tx_hash: &UInt256, save_immediately: bool) -> bool {
+        if let Some(&tx) = self.all_tx.get(tx_hash) {
+            self.remove_transaction(tx, save_immediately)
         } else {
             false
         }
     }
 
-    pub fn remove_transaction(&mut self, base_transaction: &dyn ITransaction, save_immediately: bool) -> bool {
+    pub fn remove_transaction(&mut self, base_transaction: Box<dyn ITransaction>, save_immediately: bool) -> bool {
         let mut dependent_transactions = HashSet::new();
         if let Some(transaction) = self.all_tx.get(&base_transaction.tx_hash()) {
             let transaction_hash = transaction.tx_hash();
@@ -1103,11 +1118,11 @@ impl Account {
     /// Signing
 
     /// sign any inputs in the given transaction that can be signed using private keys from the wallet
-    pub fn sign_transaction(&self, transaction: &dyn ITransaction, authprompt: Option<String>, completion: fn(bool, bool)) {
+    pub fn sign_transaction(&self, transaction: &mut dyn ITransaction, authprompt: Option<String>, completion: fn(bool, bool)) {
         if self.is_view_only_account {
             return;
         }
-        let mut used_derivation_paths = Vec::<(dyn IDerivationPath, HashSet<u32>, HashSet<u32>)>::new();
+        let mut used_derivation_paths = Vec::<(Box<dyn IDerivationPath>, HashSet<u32>, HashSet<u32>)>::new();
         let amount = self.amount_sent_by_transaction(transaction) - self.amount_received_from_transaction(transaction);
         for derivation_path in self.fund_derivation_paths {
             let mut external_indexes = HashSet::<u32>::new();
@@ -1130,22 +1145,22 @@ impl Account {
                 }
             }
             if !external_indexes.is_empty() || !internal_indexes.is_empty() {
-                used_derivation_paths.push((derivation_path, external_indexes, internal_indexes));
+                used_derivation_paths.push((derivation_path.clone(), external_indexes, internal_indexes));
             }
         }
         let seed_completion: SeedCompletionBlock = |seed, cancelled| {
             if seed.is_none() {
                 completion(false, true);
             } else {
-                let mut privkeys = Vec::<dyn IKey>::new();
+                let mut privkeys = Vec::<&dyn IKey>::new();
                 used_derivation_paths.iter().for_each(|(derivation_path, external_indexes, internal_indexes)| {
                     if derivation_path.kind() == DerivationPathKind::Funds {
                         let path = derivation_path as FundsDerivationPath;
-                        privkeys.extend(path.private_keys(external_indexes.iter().collect(), false, seed));
-                        privkeys.extend(path.private_keys(internal_indexes.iter().collect(), true, seed.clone()));
+                        privkeys.extend(path.private_keys(external_indexes.iter().collect(), false, &seed.unwrap()));
+                        privkeys.extend(path.private_keys(internal_indexes.iter().collect(), true, &seed.unwrap()));
                     } else if derivation_path.kind() == DerivationPathKind::IncomingFunds {
                         let path = derivation_path as IncomingFundsDerivationPath;
-                        privkeys.extend(path.private_keys(external_indexes.iter().collect(), seed));
+                        privkeys.extend(path.private_keys(external_indexes.iter().collect(), &seed.unwrap()));
                     } else {
                         assert!(false, "The derivation path must be a normal or incoming funds derivation path");
                     }
@@ -1154,7 +1169,7 @@ impl Account {
                 completion(signed_successfully, false);
             }
         };
-        self.wallet.unwrap().seed_request_block.unwrap()(authprompt, cmp::max(amount, 0), Some(seed_completion));
+        self.wallet.unwrap().seed_request_block.unwrap()(authprompt, cmp::max(amount, 0), seed_completion);
     }
 
     /// sign any inputs in the given transaction that can be signed using private keys from the wallet
@@ -1165,7 +1180,7 @@ impl Account {
         let amount = transactions.iter().map(|tx| self.amount_sent_by_transaction(tx) - self.amount_received_from_transaction(tx)).sum();
         let seed_completion: SeedCompletionBlock = |seed, cancelled| {
             for transaction in transactions {
-                let mut used_derivation_paths = Vec::<(&dyn IDerivationPath, HashSet<u32>, HashSet<u32>)>::new();
+                let mut used_derivation_paths = Vec::<(Box<dyn IDerivationPath>, HashSet<u32>, HashSet<u32>)>::new();
                 for derivation_path in self.fund_derivation_paths {
                     let mut external_indexes = HashSet::<u32>::new();
                     let mut internal_indexes = HashSet::<u32>::new();
@@ -1182,7 +1197,7 @@ impl Account {
                             continue;
                         }
                     }
-                    used_derivation_paths.push((derivation_path, external_indexes, internal_indexes));
+                    used_derivation_paths.push((derivation_path.clone(), external_indexes, internal_indexes));
                 }
                 if seed.is_none() {
                     completion(false, cancelled);
@@ -1197,21 +1212,21 @@ impl Account {
                 }
             }
         };
-        self.wallet.unwrap().seed_request_block.unwrap()(authprompt, cmp::max(amount, 0), Some(seed_completion));
+        self.wallet.unwrap().seed_request_block.unwrap()(authprompt, cmp::max(amount, 0), seed_completion);
     }
 
     /// Registration
 
     /// records the transaction in the account, or returns false if it isn't associated with the wallet
-    pub fn register_transaction(&mut self, transaction: &dyn ITransaction, save_immediately: bool) -> bool {
+    pub fn register_transaction(&mut self, transaction: Box<dyn ITransaction>, save_immediately: bool) -> bool {
         let hash = transaction.tx_hash();
         if hash.is_zero() {
             return false;
         }
-        if !self.can_contain_transaction(transaction) {
+        if !self.can_contain_transaction(&transaction) {
             // this transaction is not meant for this account
             if transaction.block_height() == TX_UNCONFIRMED {
-                if self.check_is_first_transaction(transaction) {
+                if self.check_is_first_transaction(&transaction) {
                     // it's okay if this isn't really the first, as it will be close enough (500 blocks close)
                     self.first_transaction_hash = Some(hash);
                 }
@@ -1224,12 +1239,12 @@ impl Account {
         }
 
         // TODO: handle tx replacement with input sequence numbers (now replacements appear invalid until confirmation)
-        if self.check_is_first_transaction(transaction) {
+        if self.check_is_first_transaction(&transaction) {
             // it's okay if this isn't really the first, as it will be close enough (500 blocks close)
             self.first_transaction_hash = Some(hash);
         }
         self.all_tx.insert(hash, transaction);
-        self.transactions.insert(0, transaction);
+        self.transactions.insert(0, transaction.clone());
 
         transaction.input_addresses()
             .iter()
@@ -1255,12 +1270,12 @@ impl Account {
         transaction.load_identities_from_derivation_paths(&self.fund_derivation_paths);
         transaction.load_identities_from_derivation_paths(&self.outgoing_fund_derivation_paths());
         self.update_balance();
-        if saveImmediately {
+        if save_immediately {
             if !self.wallet.unwrap().is_transient {
                 transaction.save_initial();
             }
         } else {
-            self.transactions_to_save.push(transaction);
+            self.transactions_to_save.push(transaction.clone());
         }
         true
     }
@@ -1272,7 +1287,7 @@ impl Account {
 
     pub fn persist_incoming_transactions_attributes_for_block_save_with_number(&mut self, block_number: u32, context: &ManagedContext) {
         if let Some(transactions) = self.transactions_to_save_in_block_save.get(&block_number) {
-            transaction.iter().for_each(|tx| tx.set_initial_persistent_attributes_in_context(context));
+            transactions.iter().for_each(|mut tx| { tx.set_initial_persistent_attributes_in_context(context); });
             self.transactions_to_save_in_block_save.remove(&block_number);
         }
     }
@@ -1343,12 +1358,12 @@ impl Account {
         false
     }
 
-    pub fn transaction_outputs_are_locked(&mut self, transaction: &dyn ITransaction) -> bool {
+    fn transaction_outputs_are_locked(&mut self, transaction: &dyn ITransaction) -> bool {
         self.transaction_outputs_are_locked_till(transaction) != 0
     }
 
     /// true if this transaction outputs can not be used in inputs
-    pub fn transaction_outputs_are_locked_till(&mut self, transaction: &dyn ITransaction) -> u32 {
+    fn transaction_outputs_are_locked_till(&mut self, transaction: &dyn ITransaction) -> u32 {
         if transaction.kind() == TransactionType::Coinbase {
             // only allow these to be spent after 100 inputs
             let coinbase_transaction = transaction as CoinbaseTransaction;
@@ -1409,8 +1424,8 @@ impl Account {
         // TODO: don't include outputs below TX_MIN_OUTPUT_AMOUNT
         transaction.outputs()
             .iter()
-            .filter_map(|output|
-                if output.address.is_some() && self.contains_address(output.address.clone()) { Some(output.amount) } else { None })
+            .filter(|output| output.address.is_some() && self.contains_address(&output.address.unwrap()))
+            .map(|o| o.amount)
             .sum()
     }
 
@@ -1418,8 +1433,8 @@ impl Account {
         // TODO: don't include outputs below TX_MIN_OUTPUT_AMOUNT
         transaction.outputs()
             .iter()
-            .filter_map(|output|
-                if output.address.is_some() && self.contains_external_address(output.address.clone()) { Some(output) } else { None })
+            .filter(|output| output.address.is_some() && self.contains_external_address(&output.address.unwrap()))
+            .map(|o| o.amount)
             .sum()
     }
 
@@ -1427,8 +1442,8 @@ impl Account {
         // TODO: don't include outputs below TX_MIN_OUTPUT_AMOUNT
         transaction.outputs()
             .iter()
-            .filter_map(|output|
-                if output.address.is_some() && self.contains_internal_address(output.address.clone()) { Some(output) } else { None })
+            .filter(|output| output.address.is_some() && self.contains_internal_address(&output.address.unwrap()))
+            .map(|o| o.amount)
             .sum()
     }
 
@@ -1439,8 +1454,10 @@ impl Account {
                 let n = input.index as usize;
                 let outputs = tx.outputs();
                 if let Some(output) = outputs.get(n) {
-                    if n < outputs.len() && self.contains_address(output.address.clone()) {
-                        Some(output.amount)
+                    if let Some(address) = &output.address {
+                        if n < outputs.len() && self.contains_address(address) {
+                            return Some(output.amount);
+                        }
                     }
                 }
             }
@@ -1453,7 +1470,7 @@ impl Account {
         transaction.outputs().iter().fold(Vec::<&String>::new(), |mut addresses, output| {
             if let Some(address) = &output.address {
                 if transaction.r#type() == TransactionType::ProviderRegistration &&
-                    (transaction as ProviderRegistrationTransaction).masternode_holding_wallet.contains_holding_address(address) {
+                    (transaction as ProviderRegistrationTransaction).masternode_holding_wallet().contains_holding_address(address) {
                     let sent = self.amount_sent_by_transaction(transaction);
                     let received = self.amount_received_from_transaction(transaction);
                     if sent == 0 || received + MASTERNODE_COST + transaction.fee_used() == sent {
@@ -1462,40 +1479,32 @@ impl Account {
                 } else {
                     match self.direction_of_transaction(transaction) {
                         TransactionDirection::Sent => {
-                            if !self.contains_internal_address(Some(address.clone())) {
+                            if !self.contains_internal_address(address) {
                                 addresses.push(address);
                             }
                         },
                         TransactionDirection::Received => {
-                            if !self.contains_address(Some(address.clone())) {
+                            if !self.contains_address(address) {
                                 addresses.push(address);
                             }
                         },
                         TransactionDirection::Moved => {
-                            if !self.contains_external_address(Some(address.clone())) {
+                            if !self.contains_external_address(address) {
                                 addresses.push(address);
                             }
                         },
                         _ => {}
                     }
                 }
-
             } else if self.direction_of_transaction(transaction) == TransactionDirection::Sent {
                 if let Some(script) = &output.script {
-                    if script[0] == OP_RETURN.into_u8() {
-                        let length = script[1];
-                        if script[2] == OP_SHAPESHIFT.into_u8() {
-                            let mut writer = Vec::<u8>::new();
-                            BITCOIN_PUBKEY_ADDRESS.enc(&mut writer);
-                            // todo: check bounds are valid
-                            writer.emit_slice(&script[3..script.len() - 1])
-                                .expect("Error writer script");
-                            // todo: ensure [NSString base58checkWithData:data]
-                            addresses.push(&base58::check_encode_slice(&writer));
-                        }
-                    } else {
-                        addresses.push(&format!("Unknown address"));
-                    }
+                    addresses.push(match script {
+                        &[OP_RETURN, len, OP_SHAPESHIFT, other @ ..] =>
+                            &base58::check_encode_slice(&[[BITCOIN_PUBKEY_ADDRESS], other[..len]].concat()),
+                        _ =>
+                            &format!("Unknown address")
+
+                    });
                 }
             }
             addresses

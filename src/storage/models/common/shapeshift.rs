@@ -6,15 +6,26 @@ use crate::schema::shapeshifts;
 use crate::storage::manager::managed_context::ManagedContext;
 use crate::storage::models::entity::Entity;
 
-pub enum ShapeshiftAddressStatus {
-    Unused = 0,
-    NoDeposits = 1,
-    Received = 2,
-    Complete = 4,
-    Failed = 8,
-    Finished = ShapeshiftAddressStatus::Complete | ShapeshiftAddressStatus::Failed,
-}
+// pub enum ShapeshiftAddressStatus {
+//     Unused = 0,
+//     NoDeposits = 1,
+//     Received = 2,
+//     Complete = 4,
+//     Failed = 8,
+//     Finished = ShapeshiftAddressStatus::Complete | ShapeshiftAddressStatus::Failed,
+// }
+bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub struct ShapeshiftAddressStatus: u8 {
+        const Unused = 0;
+        const NoDeposits = 1;
+        const Received = 2;
+        const Complete = 4;
+        const Failed = 8;
+        const Finished = Self::Complete.bits | Self::Failed.bits;
 
+    }
+}
 impl From<ShapeshiftAddressStatus> for i16 {
     fn from(value: ShapeshiftAddressStatus) -> Self {
         match value {
@@ -23,13 +34,13 @@ impl From<ShapeshiftAddressStatus> for i16 {
             ShapeshiftAddressStatus::Received => 2,
             ShapeshiftAddressStatus::Complete => 4,
             ShapeshiftAddressStatus::Failed => 8,
-            ShapeshiftAddressStatus::Finished => ShapeshiftAddressStatus::Complete | ShapeshiftAddressStatus::Failed,
+            ShapeshiftAddressStatus::Finished => ShapeshiftAddressStatus::Complete.bits | ShapeshiftAddressStatus::Failed.bits,
         }
     }
 }
 impl From<i16> for ShapeshiftAddressStatus {
     fn from(value: i16) -> Self {
-        let finished = ShapeshiftAddressStatus::Complete | ShapeshiftAddressStatus::Failed;
+        let finished = ShapeshiftAddressStatus::Complete.bits | ShapeshiftAddressStatus::Failed.bits;
         match value {
             0 => ShapeshiftAddressStatus::Unused,
             1 => ShapeshiftAddressStatus::NoDeposits,
@@ -48,6 +59,7 @@ impl From<i16> for ShapeshiftAddressStatus {
 /// indexation:
 /// "expiresAt": DESC
 #[derive(Identifiable, Queryable, PartialEq, Debug)]
+#[diesel(table_name = shapeshifts)]
 pub struct ShapeshiftEntity {
     pub id: i32,
 
@@ -67,7 +79,7 @@ pub struct ShapeshiftEntity {
 }
 
 #[derive(Insertable, PartialEq, Debug)]
-#[table_name="shapeshifts"]
+#[diesel(table_name = shapeshifts)]
 pub struct NewShapeshiftEntity {
     pub input_coin_amount: f64,
     pub output_coin_amount: f64,
@@ -86,14 +98,15 @@ pub struct NewShapeshiftEntity {
 
 impl Entity for ShapeshiftEntity {
     type ID = shapeshifts::id;
-    type ChainId = None;
+    // type ChainId = ();
 
     fn id(&self) -> i32 {
         self.id
     }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        shapeshifts::dsl::shapeshifts
+        todo!()
+        //         shapeshifts::dsl::shapeshifts
     }
 }
 

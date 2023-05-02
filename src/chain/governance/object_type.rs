@@ -1,7 +1,11 @@
+use std::io::{Error, Write};
 use byte::ctx::Endian;
 use byte::{BytesExt, TryRead};
+use crate::consensus::Encodable;
 
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq)]
 pub enum ObjectType {
+    #[default]
     Unknown = 0,
     Proposal = 1,
     Trigger = 2,
@@ -21,8 +25,8 @@ impl From<u32> for ObjectType {
     }
 }
 
-impl From<ObjectType> for u32 {
-    fn from(value: ObjectType) -> Self {
+impl From<&ObjectType> for u32 {
+    fn from(value: &ObjectType) -> Self {
         match value {
             ObjectType::Unknown => 0,
             ObjectType::Proposal => 1,
@@ -39,3 +43,11 @@ impl<'a> TryRead<'a, Endian> for ObjectType {
         Ok((data, std::mem::size_of::<u32>()))
     }
 }
+
+impl Encodable for ObjectType {
+    fn consensus_encode<W: Write>(&self, mut writer: W) -> Result<usize, Error> {
+        u32::from(self).enc(&mut writer);
+        Ok(std::mem::size_of::<u32>())
+    }
+}
+

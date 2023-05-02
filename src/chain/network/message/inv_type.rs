@@ -1,8 +1,9 @@
 use byte::ctx::Endian;
 use byte::{BytesExt, TryRead};
-use crate::consensus::Encodable;
 
+#[derive(Debug, Default, PartialEq)]
 pub enum InvType {
+    #[default]
     Error = 0,
     Tx = 1,
     Block = 2,
@@ -18,7 +19,7 @@ pub enum InvType {
     GovernanceObject = 17,
     GovernanceObjectVote = 18,
     MasternodeVerify = 19,
-    CompactBlock = 20, //!< Defined in BIP152
+    CompactBlock = 20, // Defined in BIP152
     QuorumFinalCommitment = 21,
     DummyCommitment = 22, // only valid on testnet/devnet/regtest
     QuorumContribution = 23,
@@ -29,7 +30,7 @@ pub enum InvType {
     QuorumRecoveredSignature = 28,
     ChainLockSignature = 29,
     InstantSendLock = 30,
-    InstantSendDeterministicLock = 31
+    InstantSendDeterministicLock = 31,
 }
 impl From<InvType> for u32 {
     fn from(value: InvType) -> Self {
@@ -135,13 +136,5 @@ impl<'a> TryRead<'a, Endian> for InvType {
         let offset = &mut 0;
         let value = bytes.read_with::<u32>(offset, endian).unwrap();
         Ok((InvType::from(value), std::mem::size_of::<u32>()))
-    }
-}
-
-impl Encodable for InvType {
-    #[inline]
-    fn consensus_encode<S: std::io::Write>(&self, mut s: S) -> Result<usize, std::io::Error> {
-        (self.into() as u32).enc(&mut s);
-        Ok(std::mem::size_of::<u32>())
     }
 }

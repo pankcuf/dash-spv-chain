@@ -1,4 +1,4 @@
-use diesel::{QueryResult, QuerySource, Table};
+use diesel::{ExpressionMethods, QueryResult, QuerySource, Table};
 use diesel::query_builder::QueryFragment;
 use diesel::sqlite::Sqlite;
 use crate::chain::common::ChainType;
@@ -13,6 +13,7 @@ use crate::storage::models::entity::Entity;
 /// "blockchainIdentity.uniqueID == %@"
 
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[diesel(table_name = invitations)]
 pub struct InvitationEntity {
     pub id: i32,
     pub link: Option<String>,
@@ -23,7 +24,7 @@ pub struct InvitationEntity {
 }
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="invitations"]
+#[diesel(table_name = invitations)]
 pub struct NewInvitationEntity {
     pub link: &'static str,
     pub chain_id: i32,
@@ -32,10 +33,15 @@ pub struct NewInvitationEntity {
 
 impl Entity for InvitationEntity {
     type ID = invitations::id;
-    type ChainId = invitations::chain_id;
+    // type ChainId = invitations::chain_id;
+
+    fn id(&self) -> i32 {
+        self.id
+    }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        invitations::dsl::invitations
+        todo!()
+        //         invitations::dsl::invitations
     }
 }
 

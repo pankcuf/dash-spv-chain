@@ -1,3 +1,4 @@
+#[derive(Debug, Default)]
 pub struct TransientUser {
     pub display_name: Option<String>,
     pub avatar_path: Option<String>,

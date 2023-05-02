@@ -210,8 +210,9 @@ pub const LLMQ_60_75: LLMQParams = LLMQParams {
 
 #[warn(non_camel_case_types)]
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Hash, Ord)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, PartialOrd, Hash, Ord)]
 pub enum LLMQType {
+    #[default]
     LlmqtypeUnknown = 0, //other kind of
     Llmqtype50_60 = 1,   // 50 members, 30 (60%) threshold, one per hour
     Llmqtype400_60 = 2,  // 400 members, 240 (60%) threshold, one every 12 hours
@@ -340,3 +341,11 @@ impl<'a> BytesDecodable<'a, LLMQType> for LLMQType {
         bytes.read_with::<LLMQType>(offset, byte::LE).ok()
     }
 }
+
+// impl Encodable for LLMQType {
+//     fn consensus_encode<W: Write>(&self, mut writer: W) -> Result<usize, Error> {
+//         let s: u8 = self.into();
+//         s.enc(&mut writer);
+//         Ok(1)
+//     }
+// }

@@ -4,9 +4,11 @@ use diesel::sqlite::Sqlite;
 use crate::crypto::{UInt128, UInt160, UInt256, UInt384};
 use crate::schema::provider_registration_transactions;
 use crate::storage::models::entity::Entity;
-use crate::chain::tx::provider_registration_transaction::ProviderRegistrationTransaction;
 
 #[derive(Identifiable, Queryable, PartialEq, Eq, Debug)]
+#[diesel(table_name = provider_registration_transactions)]
+#[diesel(belongs_to(TransactionEntity, foreign_key = base_id))]
+#[diesel(belongs_to(LocalMasternodeEntity, foreign_key = local_masternode_id))]
 pub struct ProviderRegistrationTransactionEntity {
     pub id: i32,
     pub base_id: i32,
@@ -28,7 +30,9 @@ pub struct ProviderRegistrationTransactionEntity {
 }
 
 #[derive(Insertable, PartialEq, Eq, Debug)]
-#[table_name="provider_registration_transactions"]
+#[diesel(table_name = provider_registration_transactions)]
+#[diesel(belongs_to(TransactionEntity, foreign_key = base_id))]
+#[diesel(belongs_to(LocalMasternodeEntity, foreign_key = local_masternode_id))]
 pub struct NewProviderRegistrationTransactionEntity {
     pub base_id: i32,
 
@@ -48,11 +52,17 @@ pub struct NewProviderRegistrationTransactionEntity {
     pub script_payout: Vec<u8>,
 }
 
-impl Entity for ProviderRegistrationTransaction {
-    type Type = provider_registration_transactions::dsl::provider_registration_transactions;
+impl Entity for ProviderRegistrationTransactionEntity {
+    type ID = provider_registration_transactions::id;
+    // type ChainId = ();
+
+    fn id(&self) -> i32 {
+        self.id
+    }
 
     fn target<T>() -> T where T: Table + QuerySource, T::FromClause: QueryFragment<Sqlite> {
-        provider_registration_transactions::dsl::provider_registration_transactions
+        todo!()
+        //        provider_registration_transactions::dsl::provider_registration_transactions
     }
 }
 
